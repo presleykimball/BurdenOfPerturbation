@@ -1,0 +1,1758 @@
+---
+title: "Untitled"
+author: "Presley Kimball"
+output: html_document
+---
+
+## Set up
+```{r}
+setwd("C:/Users/prkimbal/Research/SIR(S)/")
+library(akima)
+library(cowplot)
+library(deSolve)
+library(dplyr)
+library(fields)
+library(ggplot2)
+library(lhs)
+library(paletteer)
+library(pals)
+library(RColorBrewer)
+library(readxl)
+library(tidyverse)
+library(viridis)
+library(viridisLite)
+library(zoo)
+
+# set colors for later
+flu_color = '#045B5C'
+RSV_color = '#EF8239'
+cont_color = paletteer_c("grDevices::Reds 2", 30)
+```
+
+
+## Flu model 
+```{r}
+##### seasonality - FLU
+flu_SIRS = function(t, y, parameters) {
+  S = y[1]
+  I = y[2]
+  R = y[3]
+  mu = parameters[["mu"]]
+  gamma = parameters[["gamma"]]
+  omega = parameters[["omega"]]
+  N = parameters[["N"]]
+  controlstart = parameters[["controlstart"]]
+  controlend = parameters[["controlend"]]
+  controlstart2 = parameters[["controlstart2"]]
+  controlend2 = parameters[["controlend2"]]
+  betachange = parameters[["betachange"]]
+  R0.list = parameters[["R0.list"]]
+
+  beta=R0.list[t]*(gamma+mu)
+
+  if(t >= controlstart & t < controlend){
+    beta = betachange*beta
+  }
+
+  dS = omega*R + mu * (N - S) - beta * S * I/N
+  dI = beta * S * I/N - (mu + gamma) * I
+  dR = gamma*I - omega*R - mu * R
+  res = c(dS, dI, dR)
+  list(res)
+}
+```
+
+
+```{r}
+# set model parameters
+week_start = 0
+week <- seq(1,52,1)
+qsim <-(0.006/2)*sin(2*pi*week/52 + 10.5) + 0.006 # based on fitting to NY q data
+qsim[qsim < 0] <- 0
+R0min = 1.2
+R0max = 3
+R0 = exp(-180*qsim + log(R0max - R0min)) + R0min
+times = seq(1, 52 * 80,by = 1)
+R0.list <- rep(R0,length=length(times))
+
+# run model
+out = as.data.frame(ode(y = c(S = 0.19, I = 0.01, R = 0.8), times = times, 
+                        func = flu_SIRS, 
+                        parms = list(mu = 1/(50 * 52), N = 1, R0.list = R0.list,
+                                     gamma = 1, omega = 1/40, 
+                                     controlstart = (52*63+week_start), 
+                                     controlend =(52*63 + 52+week_start),
+                                     betachange = 0.6, 
+                                     controlstart2 = (52*400)-1 ,
+                                     controlend2 = (52*400))))
+
+
+# save time series
+png("figures/fig2/flutseries.png", width =5, height = 3.1,
+units = 'in',res =300)
+par(mar = c(2,2,0.5,0.5))
+plot(out$I[out$time>(59*52) & out$time<(69*52) ]/max(out$I[out$time>(58*52) & out$time<(59*52) ]), type = 'l',col = flu_color,lwd =2,bty = 'l',xlab = '',ylab = 'norm. cases',ylim = c(0,2.5))
+dev.off()
+out.sub <- out[out$time>(40*52),]
+flu_I <- out.sub$I
+flu_S <- out.sub$S
+
+# repeat but now for counterfactual
+week_start = 100000000
+out = as.data.frame(ode(y = c(S = 0.19, I = 0.01, R = 0.8), times = times, 
+                        func = flu_SIRS, 
+                        parms = list(mu = 1/(50 * 52), N = 1, R0.list = R0.list,
+                                     gamma = 1, omega = 1/40, 
+                                     controlstart = (52*63+week_start), 
+                                     controlend =(52*63 + 52+week_start),
+                                     betachange = 1, 
+                                     controlstart2 = (52*400)-1 ,
+                                     controlend2 = (52*400))))
+
+out.sub <- out[out$time>(40*52),]
+# plot(out.sub$I, type = 'l')
+
+flu_I_counter <- out.sub$I
+
+```
+
+## RSV model 
+```{r}
+# Call in contact matrix
+K <- read_excel("US_contact.xlsx")
+K <- as.matrix(K)
+# duplicate the first column (match other age groups)
+K <- cbind(K[,1],K[,1],K[,1],K[,1],K)
+K <- rbind(K[1,],K[1,],K[1,],K[1,],K)
+colnames(K) <- c("0-1","1-2","2-3","3-4","4-5","5-10", "10-15", "15-20", "20-25",
+                 "25-30", "30-35", "35-40", "40-45", "45-50", "50-55", "55-60",
+                 "60-65", "65-70", "70-75", "75+")
+rownames(K) <- c("0-1","1-2","2-3","3-4","4-5","5-10", "10-15", "15-20", "20-25",
+                 "25-30", "30-35", "35-40", "40-45", "45-50", "50-55", "55-60",
+                 "60-65", "65-70", "70-75", "75+")
+
+# transpose the matrix to match
+K <- t(K)
+
+N0_ages <- c("0-1"= 20201362/5,
+            "1-2" = 20201362/5,
+            "2-3" = 20201362/5,
+            "3-4" = 20201362/5,
+            "4-5" = 20201362/5,
+            "5-10" = 20348657,
+            "10-15" = 20677194,
+            "15-20" = 22040343,
+            "20-25" = 21585999,
+            "25-30" = 21101849,
+            "30-35" = 19962099,
+            "35-40" = 20179642,
+            "40-45" = 20890964,
+            "45-50" = 22708591,
+            "50-55" = 22298125,
+            "55-60" = 19664805,
+            "60-65" = 16817924,
+            "65-70" = 12435263,
+            "70-75" = 9278166,
+            "75+" = 7317795+5743327+3620459+1448366+371244+53364)
+
+# Set global variables. Note all rates are by week
+Lambda = c("0-1"=(385746/25145561)/365.25*7,"1-2" = 0,"2-3" = 0,"3-4" = 0,"4-5" = 0,
+           "5-10" = 0,"10-15" = 0,"15-20" = 0,"20-25" = 0,"25-30" = 0,"30-35" = 0,
+           "35-40" = 0,"40-45" = 0,"45-50" = 0,"50-55" = 0,"55-60" = 0,"60-65" = 0,
+           "65-70" = 0,"70-75" = 0,"75+" = 0)
+mu = (385746/25145561)/365.25*7
+ages <- c(0:4,seq(5,75,by=5))
+T <- length(ages)
+age_cats <- c("0-1","1-2","2-3","3-4","4-5","5-10", "10-15", "15-20", "20-25",
+              "25-30", "30-35", "35-40", "40-45", "45-50", "50-55", "55-60",
+              "60-65", "65-70", "70-75", "75+")
+m = 1/200*7
+gamma_vec = c(1/10,1/7,1/5,1/5)*7
+r_vec = c(1/(diff(ages)*365.25),0)*7
+rho_vec = c(1,0.75,0.51,0.51)
+sigma_vec = c(1,0.76,0.6,0.4)
+p_R = 1
+K = K
+h_1 = c((0.2*0.44*0.9/4+0.08*0.43*0.9/4+0.07*0.23*0.9/4+0.06*0.22*0.9/4*2),# 0-1
+        0.06*0.21*0.8,# 1-2
+        0.05*0.2*0.8,# 2-3
+        0.05*0.2*0.8,#3-4
+        0.05*0.2*0.8,#4-5
+        0.05*0.2*0.8,#5-10
+        rep(0.02*0.05,length(ages)-6)# above 5
+        )
+h_2 = 0.4*h_1
+h_3 = rep(0,length(ages))# set to zero, maybe close to 0 would be better
+nu_m <- (1/6)*(12*7/365.25)
+nu_b <- (1/5)*(12*7/365.25)
+iota_m <- 1-0.57
+iota_b <- 1-0.8
+
+StateNames <- c('S0','S1','S2','S3','I1','I2','I3','I4','R','Vm','Vb')
+States <- array(NA, dim=c(length(ages), length(StateNames) )) 
+dimnames(States)[[1]] <- age_cats
+dimnames(States)[[2]] <- StateNames
+
+States_IC <- States
+
+States_IC[,c('S1','S2','S3','I2','I3','I4','R','Vm','Vb')]  = 0
+States_IC[,'S0'] = c(N0_ages[1:nrow(States_IC)])
+States_IC[,'I1'] = c(rep(10000,nrow(States_IC)))  #initializes with 10000 infected person per age group (This is since the N0_ages values are based on entire US population. We rescale down to population being simulated later. This allows for base endemic to occur.)
+
+# Scale total population size down to 1 (so that the population size is stable)
+# We are assuming that all locations have similar population distribution and 
+# thus are rescaled by the population in each location (done later)
+States_IC <- States_IC/sum(States_IC)
+
+# convert initial condition to a vector for ODE solver
+States_IC_vec <- as.vector(States_IC)
+names(States_IC_vec) <- paste(rep(rownames(States_IC),ncol(States_IC)),
+                              rep(colnames(States_IC),each = nrow(States_IC)), sep = " ")
+
+
+ODE_solve_SIR <- function(parms,States_IC_vec,lngth_soln_months){
+  times <- seq(0,lngth_soln_months,by = 1)
+  solution <- ode(y=States_IC_vec, t=times,func=SIR, method = "ode45",
+                  parms=parms)
+  final_soln <- solution[(nrow(solution)-lngth_soln_months+1):nrow(solution),]
+  # Reset time-scale to match the timescale of the data
+  final_soln[,"time"] <- final_soln[,"time"]- min(final_soln[,"time"])
+  return(final_soln)
+}
+
+tau_vec <- function(tau_1,tau_2){
+  tau <- rep(1,length(age_cats))
+  for(i in 1:5){
+    tau[i] <- tau_1 * ((i-1)+0.5)+tau_2
+  }
+  return(tau)
+}
+```
+
+
+```{r}
+# load in source code and parameters to run
+load("TX_parms.RData")
+source('source/SIR.R')
+source('source/Track_Hospitalizations.R')
+# Fix taus so there is no contact matrix amplification.
+TX_parms$tau_1 <- 0
+TX_parms$tau_2 <- 1
+
+# Fix the vaccination rates to 0
+TX_parms$chi_m <- 0
+TX_parms$chi_b <- 0
+TX_parms$step_function <- FALSE
+
+# Add parameters for perturbation
+TX_parms$control_start <- 43*52
+TX_parms$control_end <- 43*52 +52
+TX_parms$beta_change <- 0.6
+
+# Make plots of the model and the Error bar plots of the prop of RSV across
+# age categories.
+param_set <- TX_parms
+param_set <- param_set[order(param_set$Loss, decreasing = FALSE),]
+parms <- as.list(param_set[1,]) # take only the best parameter set
+  
+  # Get solution using best params
+solution <- ODE_solve_SIR(parms,States_IC_vec,60*52)
+RSV_I_raw <- rowSums(solution[(20*52+1):nrow(solution),
+                              grep('I',colnames(solution))])  
+RSV_S_raw <- rowSums(solution[(20*52+1):nrow(solution),
+                              grep('S',colnames(solution))])  
+hospitalizations <- Track_Hospitalizations(solution = solution,parms = parms)
+
+# remove first 20 burn in years
+hospitalizations <- hospitalizations[(20*52+1):nrow(hospitalizations),]
+hospitalizations[,1] <-hospitalizations[,1] - min(hospitalizations[,1])
+tot_hosps <- rowSums(hospitalizations[,2:ncol(hospitalizations)])
+png("figures/fig2/RSVtseries.png", width =5, height = 3.1,
+    units = 'in',res =300)
+par(mar = c(2,2,0.5,0.5))
+plot(tot_hosps[(19*52):(29*52)]/max(tot_hosps[(18*52):(19*52)]), type = 'l', xlab = "Weeks",col = RSV_color,lwd =2,bty = 'l',,ylab = 'norm. cases',
+     ylim = c(0,2.5))
+dev.off()
+RSV_I <- tot_hosps
+```
+
+
+```{r}
+# repeat for counterfactual
+parms$beta_change <- 1
+solution <- ODE_solve_SIR(parms,States_IC_vec,60*52)
+hospitalizations <- Track_Hospitalizations(solution = solution,parms = parms)
+hospitalizations <- hospitalizations[(20*52+1):nrow(hospitalizations),]
+hospitalizations[,1] <-hospitalizations[,1] - min(hospitalizations[,1])
+RSV_I_counter <- rowSums(hospitalizations[,2:ncol(hospitalizations)])
+```
+
+## Comparing Flu and RSV
+```{r}
+# get normalization factors for each
+flu_Inorm <- max(flu_I[1:52])
+flu_Snorm <- max(flu_I[1:52])
+RSV_Inorm <- max(RSV_I_raw[1:52])
+RSV_Snorm <- max(RSV_I_raw[1:52])
+
+
+# recenter S-I phase plane for RSV due to damped oscillations
+years <- length(RSV_S_raw) / 52
+target_mean <- mean(RSV_S_raw[1:52])
+
+mult_S <- rep(1, length(RSV_S_raw))
+for (year in 1:years) {
+  idx <- (1 + (year-1)*52):(year*52)
+  year_mean <- mean(RSV_S_raw[idx])
+  mult_S[idx] <- target_mean / year_mean
+}
+
+
+# plot phase planes
+idxs <- (1:length(RSV_S_raw))>(20*52)
+RSV_mod <- RSV_S_raw*mult_S
+png("figures/fig2/fluphase.png", width =2.5, height = 2.75,
+    units = 'in',res =300)
+par(mar = c(2,2,0.5,0.5))
+plot(flu_S[idxs]/flu_Snorm,flu_I[idxs]/flu_Inorm, bty = 'l', xlab = '',
+     ylab = '',type = 'l', col = flu_color,
+     ylim = c(min(c(flu_I[idxs]/flu_Inorm,RSV_I_raw[idxs]/RSV_Inorm)),
+              max(c(flu_I[idxs]/flu_Inorm,RSV_I_raw[idxs]/RSV_Inorm))),
+     xlim = c(min(c(flu_S[idxs]/flu_Snorm)),
+              max(c(flu_S[idxs]/flu_Snorm))),lwd = 2)
+dev.off()
+png("figures/fig2/RSVphase.png", width =2.55, height = 2.75,
+    units = 'in',res =300)
+par(mar = c(2,0.75,0.5,0.5))
+plot(RSV_mod[idxs]/RSV_Snorm,RSV_I_raw[idxs]/RSV_Inorm, bty = 'l',xlab= '',
+      ylab = '',type = 'l', col= RSV_color,lwd = 2,
+      ylim = c(min(c(flu_I[idxs]/flu_Inorm,RSV_I_raw[idxs]/RSV_Inorm)),
+               max(c(flu_I[idxs]/flu_Inorm,RSV_I_raw[idxs]/RSV_Inorm))),
+      xlim = c(min(c(RSV_mod[idxs]/RSV_Snorm)),
+               max(c(RSV_mod[idxs]/RSV_Snorm))),yaxt = 'n')
+axis(2,labels = F)
+dev.off()
+
+```
+
+
+```{r}
+
+# compute cumulative cases of each
+flu_sum <- rep(0, length(flu_I)+1)
+RSV_sum <- rep(0, length(RSV_I)+1)
+
+for (i in 1:length(flu_I)){
+  flu_sum[i+1] <- flu_sum[i]+ flu_I[i]
+  RSV_sum[i+1] <- RSV_sum[i]+ RSV_I[i]
+}
+
+# normalize
+flu_sum <- flu_sum/flu_sum[52*23]
+RSV_sum <- RSV_sum/RSV_sum[52*23]
+
+# make plot
+start = 19*52
+end = 29*52
+png("figures/fig2/Cumulativetseries.png", width =5.5, height = 3.5,
+    units = 'in',res =300)
+par(mar = c(2,2,0.5,0.5))
+plot(flu_sum[start:end], type = 'l', col = flu_color, lwd = 2, xlab = 'weeks',ylab ='normed cumulative cases',bty = 'l')
+lines(RSV_sum[start:end], col = RSV_color, lwd = 2)
+# legend("topleft", legend = c("Flu","RSV"), col = c(flu_color,RSV_color), lty =1, lwd =2,
+       # cex = 0.8)
+dev.off()
+
+```
+
+
+```{r}
+# compute short and long term burdens
+flu_metric_short <-rep(NA,length.out = (length(flu_I)-51))
+RSV_metric_short <-rep(NA,length.out = (length(RSV_I)-51))
+flu_metric_long <-rep(NA,length.out = (length(flu_I)-51))
+RSV_metric_long <-rep(NA,length.out = (length(RSV_I)-51))
+
+  
+denom_window_len <- 51
+for(i in 1:length(flu_metric_short)){
+  num_len <- 4
+  num_window <- (i+denom_window_len-num_len):(i+denom_window_len)
+  denom_window <- i:(i+denom_window_len)
+  
+  numerator <- sum(flu_I[num_window]-flu_I_counter[num_window])
+  denominator <- max(flu_I_counter[denom_window])
+  flu_metric_short[i] <- numerator/denominator
+  
+  numerator <- sum(RSV_I[num_window]-RSV_I_counter[num_window])
+  denominator <- max(RSV_I_counter[denom_window])
+  RSV_metric_short[i] <- numerator/denominator
+  
+  flu_metric_long[i]<-sum(flu_I[1:(i+denom_window_len)]-
+                            flu_I_counter[1:(i+denom_window_len)])/max( 
+                              flu_I_counter[1:(i+denom_window_len)])
+  
+  RSV_metric_long[i]<-sum(RSV_I[1:(i+denom_window_len)]-
+                            RSV_I_counter[1:(i+denom_window_len)])/max( 
+                              RSV_I_counter[1:(i+denom_window_len)])
+}
+
+# make plots
+png("figures/fig2/short_metrictseries.png", width =5.1, height = 2.3,
+    units = 'in',res =300)
+par(mar = c(2,2,0.5,0.5))
+plot(RSV_metric_short[start:end-51], type = 'l', ylim = c(-5.5,9),col= RSV_color, lwd =2, 
+     bty ='l')
+lines(flu_metric_short[start:end-51],col= flu_color, lwd = 2)
+xargmax <- which.max(RSV_metric_short[start:end-51])
+segments(x1 = xargmax, 
+         y0 = max(RSV_metric_short), 
+         x0 = par("usr")[1], 
+         y1 = max(RSV_metric_short),lty = 2, lwd = 2, col = RSV_color)
+xargmax <- which.max(flu_metric_short[start:end-51])
+segments(x1 = xargmax, 
+         y0 = max(flu_metric_short), 
+         x0 = par("usr")[1], 
+         y1 = max(flu_metric_short),lty = 2, lwd = 2, col = flu_color)
+
+dev.off()
+
+png("figures/fig2/long_metrictseries.png", width =5.1, height = 2.3,
+    units = 'in',res =300)
+par(mar = c(2,2,0.5,0.5))
+plot(RSV_metric_long[start:end-51], type = 'l', ylim = c(-10,4),col= RSV_color, lwd =2, 
+     bty ='l')
+lines(flu_metric_long[start:end-51],col= flu_color, lwd = 2)
+dev.off()
+```
+
+
+
+```{r}
+# vary perturbation levels
+perts <- seq(0.6,1,0.025)
+
+# compute effect on simple metrics under those perturbations
+RSV_relmax <- rep(NA, length.out = length(perts))
+flu_relmax <- rep(NA, length.out = length(perts))
+RSV_relmean <- rep(NA, length.out = length(perts))
+flu_relmean <- rep(NA, length.out = length(perts))
+
+for(i in 1:length(perts)){
+  pert <- perts[i]
+  
+  ########## RSV
+  parms$beta_change <- pert
+  solution <- ODE_solve_SIR(parms,States_IC_vec,60*52)
+  hospitalizations <- Track_Hospitalizations(solution = solution,parms = parms)
+  hospitalizations <- hospitalizations[(40*52+1):(46*52),]
+  hospitalizations[,1] <-hospitalizations[,1] - min(hospitalizations[,1])
+  RSV_I_temp <- rowSums(hospitalizations[,2:ncol(hospitalizations)])
+  
+  
+  RSV_relmax[i] <- max(RSV_I_temp[(3*52+1):(6*52)])/max(RSV_I_temp[1:(3*52)])
+  RSV_relmean[i] <- sum(RSV_I_temp[(3*52+1):(6*52)])/sum(RSV_I_temp[1:(3*52)])
+  
+  ########## flu
+  week_start <- 0 
+  out = as.data.frame(ode(y = c(S = 0.19, I = 0.01, R = 0.8), times = times, 
+                        func = flu_SIRS, 
+                        parms = list(mu = 1/(50 * 52), N = 1, R0.list = R0.list,
+                                     gamma = 1, omega = 1/40, 
+                                     controlstart = (52*63+week_start), 
+                                     controlend =(52*63 + 52+week_start),
+                                     betachange = pert, 
+                                     controlstart2 = (52*400)-1 ,
+                                     controlend2 = (52*400))))
+  flu_I_temp <- out$I[(52*60+week_start+1):(52*66+week_start)]
+  
+  flu_relmax[i] <- max(flu_I_temp[(3*52+1):(6*52)])/max(flu_I_temp[1:(3*52)])
+  flu_relmean[i] <- sum(flu_I_temp[(3*52+1):(6*52)])/sum(flu_I_temp[1:(3*52)])
+  
+}
+
+# make plots
+png("figures/fig2/simplemetrics.png", width =5.1, height = 2.5,
+    units = 'in',res =300)
+par(mar = c(2,2,0.5,0.5))
+plot(1-perts,RSV_relmax, ylim =c(min(c(RSV_relmax,RSV_relmean,
+                                         flu_relmax,flu_relmean))-0.1,
+                               0.1+max(c(RSV_relmax,RSV_relmean,
+                                         flu_relmax,flu_relmean))),
+     type = 'l', col = RSV_color, lwd = 2,bty = 'l')
+lines(1-perts,RSV_relmean,col = RSV_color, lwd = 2, lty = 2)
+lines(1-perts,flu_relmax,,col = flu_color, lwd = 2)
+lines(1-perts,flu_relmean,col = flu_color, lwd = 2, lty = 2)
+legend('topleft', legend = c("Rel. Max","Rel. Mean"), lty = c(1,2), cex = 0.8,lwd = 2)
+dev.off()
+```
+
+
+## Overview of burden metrics
+
+```{r,eval = T}
+# set base parameters
+R0min = 2.2-0.75
+R0max = 2.2+0.75
+omegas = seq(0.012,0.02, length.out = 25)
+betachanges <- seq(0.6,1,length.out = 25)
+durations <- seq(10, 52,length.out = 25)
+
+# matrices to store
+shortomegabeta.mat <- matrix(0,nrow = 25,ncol = 25)
+shortomegaduration.mat <- matrix(0,nrow = 25,ncol = 25)
+longomegabeta.mat <- matrix(0,nrow = 25,ncol = 25)
+longomegaduration.mat <- matrix(0,nrow = 25,ncol = 25)
+
+# compute each metric for each combination
+for(row_num in 1:100){
+  for(col_num in 1:25){
+  omega <- omegas[row_num]
+  beta_change <- betachanges[col_num]
+
+  week <- seq(1,52,1)
+  qsim <-(0.006/2)*sin(2*pi*week/52 + 10.5) + 0.006 # based on fitting to NY q data
+  qsim[qsim < 0] <- 0
+  R0 = exp(-180*qsim + log(R0max - R0min)) + R0min
+  
+        
+  times = seq(1, 52 * 73,by = 1)
+  R0.list <- rep(R0,length=length(times))
+    
+  week_start = 100000000
+  out = as.data.frame(ode(y = c(S = 0.19, I = 0.01, R = 0.8), times = times, 
+                          func = flu_SIRS, 
+                          parms = list(mu = 1/(50 * 52), N = 1, R0.list = R0.list,
+                                       gamma = 1, omega = omega, 
+                                       controlstart = (52*63+week_start), 
+                                       controlend =(52*63 + 52+week_start),
+                                       betachange = 1, 
+                                       controlstart2 = (52*400)-1 ,
+                                       controlend2 = (52*400))))
+    
+  out.sub <- out[out$time>(55*52),]
+  flu_I_counter <- out.sub$I
+      
+  first_year <- flu_I_counter[1:52]
+  t_max <- which.max(first_year)
+      
+  week_start <- t_max
+  
+  out = as.data.frame(ode(y = c(S = 0.19, I = 0.01, R = 0.8), times = times, 
+                          func = flu_SIRS, 
+                          parms = list(mu = 1/(50 * 52), N = 1, R0.list = R0.list,
+                                       gamma = 1, omega = omega, 
+                                       controlstart = (52*63+week_start), 
+                                       controlend =(52*63 + 52+week_start),
+                                       betachange = beta_change, 
+                                       controlstart2 = (52*400)-1 ,
+                                       controlend2 = (52*400))))
+  
+  out.sub <- out[out$time>(55*52),]
+  flu_I <- out.sub$I
+  
+  denom_window_len <- 51
+  month_metric <-rep(NA,length.out = (length(flu_I)-denom_window_len))
+  threemonth_metric <-rep(NA,length.out = (length(flu_I)-denom_window_len))
+  annual_metric <-rep(NA,length.out = (length(flu_I)-denom_window_len))
+  
+  for(i in 1:length(month_metric)){
+      num_len <- 4
+      num_window <- (i+denom_window_len-num_len):(i+denom_window_len)
+      denom_window <- i:(i+denom_window_len)
+      numerator <- sum(flu_I[num_window]-flu_I_counter[num_window])
+      denominator <- max(flu_I_counter[denom_window])
+      month_metric[i] <- numerator/denominator
+      
+      num_len <- 12
+      num_window <- (i+denom_window_len-num_len):(i+denom_window_len)
+      numerator <- sum(flu_I[num_window]-flu_I_counter[num_window])
+      threemonth_metric[i] <- numerator/denominator
+      
+      num_window <- (1):(i+denom_window_len)
+      annual_metric[i] <- sum(flu_I[num_window]-flu_I_counter[num_window])
+      
+  }
+  
+  annual_metric <- annual_metric/max(flu_I_counter)
+
+    shortomegabeta.mat[row_num,col_num] <- max(month_metric)
+    longomegabeta.mat[row_num,col_num] <-annual_metric[length(annual_metric)]
+  }
+}
+
+for(row_num in 1:100){
+  for(col_num in 1:25){
+  omega <- omegas[row_num]
+  duration <- durations[col_num]
+
+  week <- seq(1,52,1)
+  qsim <-(0.006/2)*sin(2*pi*week/52 + 10.5) + 0.006 # based on fitting to NY q data
+  qsim[qsim < 0] <- 0
+  R0 = exp(-180*qsim + log(R0max - R0min)) + R0min
+  
+        
+  times = seq(1, 52 * 73,by = 1)
+  R0.list <- rep(R0,length=length(times))
+    
+  week_start = 100000000
+  out = as.data.frame(ode(y = c(S = 0.19, I = 0.01, R = 0.8), times = times, 
+                          func = flu_SIRS, 
+                          parms = list(mu = 1/(50 * 52), N = 1, R0.list = R0.list,
+                                       gamma = 1, omega = omega, 
+                                       controlstart = (52*63+week_start), 
+                                       controlend =(52*63 + 52+week_start),
+                                       betachange = 1, 
+                                       controlstart2 = (52*400)-1 ,
+                                       controlend2 = (52*400))))
+    
+  out.sub <- out[out$time>(55*52),]
+  flu_I_counter <- out.sub$I
+      
+  first_year <- flu_I_counter[1:52]
+  t_max <- which.max(first_year)
+      
+  week_start <- t_max
+  
+  out = as.data.frame(ode(y = c(S = 0.19, I = 0.01, R = 0.8), times = times, 
+                          func = flu_SIRS, 
+                          parms = list(mu = 1/(50 * 52), N = 1, R0.list = R0.list,
+                                       gamma = 1, omega = omega, 
+                                       controlstart = (52*63+week_start), 
+                                       controlend =(52*63 + duration+week_start),
+                                       betachange = 0.6, 
+                                       controlstart2 = (52*400)-1 ,
+                                       controlend2 = (52*400))))
+  
+  out.sub <- out[out$time>(55*52),]
+  flu_I <- out.sub$I
+  
+  denom_window_len <- 51
+  month_metric <-rep(NA,length.out = (length(flu_I)-denom_window_len))
+  threemonth_metric <-rep(NA,length.out = (length(flu_I)-denom_window_len))
+  annual_metric <-rep(NA,length.out = (length(flu_I)-denom_window_len))
+  
+  for(i in 1:length(month_metric)){
+      num_len <- 4
+      num_window <- (i+denom_window_len-num_len):(i+denom_window_len)
+      denom_window <- i:(i+denom_window_len)
+      numerator <- sum(flu_I[num_window]-flu_I_counter[num_window])
+      denominator <- max(flu_I_counter[denom_window])
+      month_metric[i] <- numerator/denominator
+      
+      num_len <- 12
+      num_window <- (i+denom_window_len-num_len):(i+denom_window_len)
+      numerator <- sum(flu_I[num_window]-flu_I_counter[num_window])
+      threemonth_metric[i] <- numerator/denominator
+      
+      num_window <- (1):(i+denom_window_len)
+      annual_metric[i] <- sum(flu_I[num_window]-flu_I_counter[num_window])
+      
+  }
+  
+  annual_metric <- annual_metric/max(flu_I_counter)
+
+    shortomegaduration.mat[row_num,col_num] <- max(month_metric)
+    longomegaduration.mat[row_num,col_num] <-annual_metric[length(annual_metric)]
+  }
+}
+
+# save results
+save(shortomegabeta.mat, file = "shortomegabeta.RData")
+save(longomegabeta.mat, file = "longomegabeta.RData")
+save(shortomegaduration.mat, file = "shortomegaduration.RData")
+save(longomegaduration.mat, file = "longomegaduration.mat.RData")
+```
+
+```{r}
+# load results
+cols_pal <-hcl.colors(256, "Blues 2")
+
+load("shortomegabeta.RData")
+load("longomegabeta.RData")
+load("shortomegaduration.RData")
+load("longomegaduration.mat.RData")
+
+omegas = seq(0.012,0.02, length.out = 25)
+betachanges <- seq(0.6,1,length.out = 25)
+durations <- seq(10, 52,length.out = 25)
+
+
+# make heatmaps
+# png("figures/fig3/heat_transmissionomega_short.png", 
+#     width =4, height = 2.7,units = 'in',res =300)
+par(mar=c(2,2,0.5,2))
+image.plot(
+  x = omegas,
+  y = 1-rev(betachanges),
+  z = shortomegabeta.mat[,ncol(shortomegabeta.mat):1],
+  xlab = "",
+  ylab = "",
+  col = rev(cols_pal),
+  bty = 'l'
+)
+# dev.off()
+
+
+
+# png("figures/fig3/heat_transmissionomega_long.png", 
+#     width =4, height = 2.7,units = 'in',res =300)
+par(mar=c(2,2,0.5,2))
+image.plot(
+  x = omegas,
+  y = 1-rev(betachanges),
+  z = longomegabeta.mat[,ncol(longomegabeta.mat):1],
+  xlab = "",
+  ylab = "",
+  col = rev(cols_pal),
+  bty = 'l'
+)
+
+# dev.off()
+
+# png("figures/fig3/heat_durationomega_short.png", 
+#     width =4, height = 2.7,units = 'in',res =300)
+par(mar=c(2,2,0.5,2))
+image.plot(
+  x = omegas,
+  y = durations,
+  z = shortomegaduration.mat,
+  xlab = "",
+  ylab = "",
+  col = rev(cols_pal),
+  bty = 'l'
+)
+
+# dev.off()
+
+
+
+# png("figures/fig3/heat_durationomega_long.png", 
+#     width =4, height = 2.7,units = 'in',res =300)
+par(mar=c(2,2,0.5,2))
+image.plot(
+  x = omegas,
+  y = durations,
+  z = longomegaduration.mat,
+  xlab = "",
+  ylab = "",
+  col = rev(cols_pal),
+  bty = 'l'
+)
+
+# dev.off()
+
+```
+
+
+```{r}
+# take cross section to show non monotonic jumps
+vector <- shortomegaduration.mat[,1]
+# png("figures/supplement/breaks_lineplt.png", 
+#         width =7, height = 5,units = 'in',res =300)
+par(mar = c(2,2,0.5,0.5))
+plot(omegas,vector,type = 'l', lwd = 2, bty = 'l',xlab = "", ylab = "")
+rect(xleft = 1/85,
+     ybottom = par("usr")[3],
+     xright = 1/70,
+     ytop = par("usr")[4],
+     col = 'darkgrey',
+     border = NA)
+lines(omegas, vector, lwd = 2)
+# dev.off()
+
+idx <- rep(NA, length.out = length(omegas))
+for(id in 1:(length(idx)-1)){
+  if(vector[id+1]-vector[id]>0.2){
+    idx[id] <- TRUE
+  } else{
+    idx[id] <- FALSE
+  }
+}
+idx[id+1] <- FALSE
+
+# plot dynamics along shaded region
+R0min = 2.2-0.75
+R0max = 2.2+0.75
+colnum = 1
+colors <- cividis(16)#c( "#AFA9EC", "#534AB7","#26215C")
+colnum <- 1
+omega_set <- seq(70,85,length.out = 16)
+omega_set <- 1/omega_set
+for(omega in omega_set){
+  week_start = 0
+  week <- seq(1,52,1)
+  qsim <-(0.006/2)*sin(2*pi*week/52 + 10.5) + 0.006 # based on fitting to NY q data
+  qsim[qsim < 0] <- 0
+  R0 = exp(-180*qsim + log(R0max - R0min)) + R0min
+  
+  times = seq(1, 52 * 73,by = 1)
+  R0.list <- rep(R0,length=length(times))
+  out = as.data.frame(ode(y = c(S = 0.19, I = 0.01, R = 0.8), times = times, 
+                          func = flu_SIRS, 
+                          parms = list(mu = 1/(50 * 52), N = 1, R0.list = R0.list,
+                                       gamma = 1, omega = omega, 
+                                       controlstart = (52*63+week_start), 
+                                       controlend =(52*63 + 52+week_start),
+                                       betachange = 0.6, 
+                                       controlstart2 = (52*400)-1 ,
+                                       controlend2 = (52*400))))
+  out.sub <- out[out$time>(56*52),]
+  week_start <- which.max(out.sub$I[1:52])
+  out = as.data.frame(ode(y = c(S = 0.19, I = 0.01, R = 0.8), times = times, 
+                          func = flu_SIRS, 
+                          parms = list(mu = 1/(50 * 52), N = 1, R0.list = R0.list,
+                                       gamma = 1, omega = omega, 
+                                       controlstart = (52*63+week_start), 
+                                       controlend =(52*63 + 52+week_start),
+                                       betachange = 0.6, 
+                                       controlstart2 = (52*400)-1 ,
+                                       controlend2 = (52*400))))
+
+  out.sub <- out[out$time>(56*52),]
+  flu_I <- out.sub$I*1000
+  flu_S <- out.sub$S*1000
+  # plot(flu_I, type = 'l')
+  # print(max(flu_I))
+    
+  if(colnum ==1){
+    # png("figures/supplement/breaks_dynamics.png", 
+    #     width =7, height = 5,units = 'in',res =300)
+    par(mar = c(2,2,0.5,0.5))
+    plot(flu_I, lwd = 2, col = colors[colnum], type = 'l',
+         xlab = "", ylab = "", bty = 'l', ylim = c(0,120))
+  }else{
+    lines(flu_I, lwd = 2,col = colors[colnum])
+  }
+  colnum=colnum+1
+}
+legend("topleft",legend = round(omega_set,5), col = colors, lty = 1, lwd = 2)
+# dev.off()
+
+```
+
+
+```{r}
+# set base parameters
+R0min = 2.2-0.75
+R0max = 2.2+0.75
+omegas = rev(c(0.012,0.016,0.02))
+colnum = 1
+colors = c( "#AFA9EC", "#534AB7","#26215C")
+
+# plot burden metrics based on perturbation
+for(omega in omegas){
+
+  week <- seq(1,52,1)
+  qsim <-(0.006/2)*sin(2*pi*week/52 + 10.5) + 0.006 # based on fitting to NY q data
+  qsim[qsim < 0] <- 0
+  R0 = exp(-180*qsim + log(R0max - R0min)) + R0min
+  
+        
+  times = seq(1, 52 * 73,by = 1)
+  R0.list <- rep(R0,length=length(times))
+    
+  week_start = 100000000
+  out = as.data.frame(ode(y = c(S = 0.19, I = 0.01, R = 0.8), times = times, 
+                          func = flu_SIRS, 
+                          parms = list(mu = 1/(50 * 52), N = 1, R0.list = R0.list,
+                                       gamma = 1, omega = omega, 
+                                       controlstart = (52*63+week_start), 
+                                       controlend =(52*63 + 52+week_start),
+                                       betachange = 1, 
+                                       controlstart2 = (52*400)-1 ,
+                                       controlend2 = (52*400))))
+    
+  out.sub <- out[out$time>(55*52),]
+  flu_I_counter <- out.sub$I
+      
+  first_year <- flu_I_counter[1:52]
+  t_max <- which.max(first_year)
+      
+  week_start <- t_max
+  
+  out = as.data.frame(ode(y = c(S = 0.19, I = 0.01, R = 0.8), times = times, 
+                          func = flu_SIRS, 
+                          parms = list(mu = 1/(50 * 52), N = 1, R0.list = R0.list,
+                                       gamma = 1, omega = omega, 
+                                       controlstart = (52*63+week_start), 
+                                       controlend =(52*63 + 52+week_start),
+                                       betachange = 0.6, 
+                                       controlstart2 = (52*400)-1 ,
+                                       controlend2 = (52*400))))
+  
+  out.sub <- out[out$time>(55*52),]
+  flu_I <- out.sub$I
+  
+  denom_window_len <- 51
+  month_metric <-rep(NA,length.out = (length(flu_I)-denom_window_len))
+  threemonth_metric <-rep(NA,length.out = (length(flu_I)-denom_window_len))
+  annual_metric <-rep(NA,length.out = (length(flu_I)-denom_window_len))
+  
+  for(i in 1:length(month_metric)){
+      num_len <- 4
+      num_window <- (i+denom_window_len-num_len):(i+denom_window_len)
+      denom_window <- i:(i+denom_window_len)
+      numerator <- sum(flu_I[num_window]-flu_I_counter[num_window])
+      denominator <- max(flu_I_counter[denom_window])
+      month_metric[i] <- numerator/denominator
+      
+      num_len <- 12
+      num_window <- (i+denom_window_len-num_len):(i+denom_window_len)
+      numerator <- sum(flu_I[num_window]-flu_I_counter[num_window])
+      threemonth_metric[i] <- numerator/denominator
+      
+      num_window <- (1):(i+denom_window_len)
+      annual_metric[i] <- sum(flu_I[num_window]-flu_I_counter[num_window])
+      
+  }
+  
+  annual_metric <- annual_metric/max(flu_I_counter)
+  
+  # take_points <- (1:34)*26+t_of_max-26
+  if(colnum ==1){
+    png("figures/fig3/longtseries.png", width =5, height = 2.6,
+    units = 'in',res =300)
+    par(mar = c(2,2,0.5,0.5))
+    plot(annual_metric, lwd = 2, col = colors[colnum], type = 'l',
+         xlab = "", ylab = "", bty = 'l', ylim = c(-17,8))
+
+  }else{
+    lines(annual_metric, lwd = 2,col = colors[colnum])
+  }
+#   xargmax <- which.max(month_metric)
+# segments(x1 = xargmax, 
+#          y0 = max(month_metric), 
+#          x0 = par("usr")[1], 
+#          y1 = max(month_metric),lty = 2, lwd = 2,colors[colnum])
+
+  colnum=colnum+1
+  print(min(annual_metric))
+  print(omega)
+}
+
+dev.off()
+# legend("topleft",legend = omegas, col = colors, lty = 1, lwd = 2)
+```
+
+
+
+
+```{r}
+# repeat parameters
+R0min = 2.2-0.75
+R0max = 2.2+0.75
+omegas = rev(c(0.012,0.016,0.02))
+colnum = 1
+colors = c( "#AFA9EC", "#534AB7","#26215C")
+ 
+# plot I dynamics of perturbations
+for(omega in omegas){
+  week_start = 0
+  week <- seq(1,52,1)
+  qsim <-(0.006/2)*sin(2*pi*week/52 + 10.5) + 0.006 # based on fitting to NY q data
+  qsim[qsim < 0] <- 0
+  R0 = exp(-180*qsim + log(R0max - R0min)) + R0min
+  
+  times = seq(1, 52 * 73,by = 1)
+  R0.list <- rep(R0,length=length(times))
+  out = as.data.frame(ode(y = c(S = 0.19, I = 0.01, R = 0.8), times = times, 
+                          func = flu_SIRS, 
+                          parms = list(mu = 1/(50 * 52), N = 1, R0.list = R0.list,
+                                       gamma = 1, omega = omega, 
+                                       controlstart = (52*63+week_start), 
+                                       controlend =(52*63 + 52+week_start),
+                                       betachange = 0.6, 
+                                       controlstart2 = (52*400)-1 ,
+                                       controlend2 = (52*400))))
+  out.sub <- out[out$time>(56*52),]
+  week_start <- which.max(out.sub$I[1:52])
+  out = as.data.frame(ode(y = c(S = 0.19, I = 0.01, R = 0.8), times = times, 
+                          func = flu_SIRS, 
+                          parms = list(mu = 1/(50 * 52), N = 1, R0.list = R0.list,
+                                       gamma = 1, omega = omega, 
+                                       controlstart = (52*63+week_start), 
+                                       controlend =(52*63 + 52+week_start),
+                                       betachange = 0.6, 
+                                       controlstart2 = (52*400)-1 ,
+                                       controlend2 = (52*400))))
+
+  out.sub <- out[out$time>(56*52),]
+  flu_I <- out.sub$I*1000
+  flu_S <- out.sub$S*1000
+  # plot(flu_I, type = 'l')
+  # print(max(flu_I))
+    
+  if(colnum ==1){
+    png("figures/fig3/Itseries.png", width =5, height = 2.6,
+    units = 'in',res =300)
+    par(mar = c(2,2,0.5,0.5))
+    plot(flu_I, lwd = 2, col = colors[colnum], type = 'l',
+         xlab = "", ylab = "", bty = 'l', ylim = c(0,120))
+  }else{
+    lines(flu_I, lwd = 2,col = colors[colnum])
+  }
+  colnum=colnum+1
+}
+legend("topleft",legend = omegas, col = colors, lty = 1, lwd = 2)
+dev.off()
+```
+
+```{r}
+# repeat parameters
+R0min = 2.2-0.75
+R0max = 2.2+0.75
+omegas = rev(c(0.012,0.016,0.02))
+colnum = 1
+colors = c( "#AFA9EC", "#534AB7","#26215C")
+ 
+# plot S dynamics of perturbations
+for(omega in omegas){
+  week_start = 0
+  week <- seq(1,52,1)
+  qsim <-(0.006/2)*sin(2*pi*week/52 + 10.5) + 0.006 # based on fitting to NY q data
+  qsim[qsim < 0] <- 0
+  R0 = exp(-180*qsim + log(R0max - R0min)) + R0min
+  
+  times = seq(1, 52 * 73,by = 1)
+  R0.list <- rep(R0,length=length(times))
+  out = as.data.frame(ode(y = c(S = 0.19, I = 0.01, R = 0.8), times = times, 
+                          func = flu_SIRS, 
+                          parms = list(mu = 1/(50 * 52), N = 1, R0.list = R0.list,
+                                       gamma = 1, omega = omega, 
+                                       controlstart = (52*63+week_start), 
+                                       controlend =(52*63 + 52+week_start),
+                                       betachange = 0.6, 
+                                       controlstart2 = (52*400)-1 ,
+                                       controlend2 = (52*400))))
+  out.sub <- out[out$time>(56*52),]
+  week_start <- which.max(out.sub$I[1:52])
+  out = as.data.frame(ode(y = c(S = 0.19, I = 0.01, R = 0.8), times = times, 
+                          func = flu_SIRS, 
+                          parms = list(mu = 1/(50 * 52), N = 1, R0.list = R0.list,
+                                       gamma = 1, omega = omega, 
+                                       controlstart = (52*63+week_start), 
+                                       controlend =(52*63 + 52+week_start),
+                                       betachange = 0.6, 
+                                       controlstart2 = (52*400)-1 ,
+                                       controlend2 = (52*400))))
+
+  out.sub <- out[out$time>(56*52),]
+  flu_I <- out.sub$I*1000
+  flu_S <- out.sub$S*1000
+    
+  if(colnum ==1){
+    png("figures/fig3/Stseries.png", width =5, height = 2.6,
+    units = 'in',res =300)
+    par(mar = c(2,2,0.5,0.5))
+    plot(flu_S, lwd = 2, col = colors[colnum], type = 'l',
+         xlab = "", ylab = "", bty = 'l', ylim = c(150,max(flu_S)))
+  }else{
+    lines(flu_S, lwd = 2,col = colors[colnum])
+  }
+  colnum=colnum+1
+}
+
+dev.off()
+```
+
+
+
+## Bifurcation diagram
+```{r, eval=FALSE}
+# set parameter range
+R0_avgs <- seq(1,10, length.out = 100)
+omegas <- seq(1/520,0.025,length.out = 100)
+
+# make matrices to store
+mat <- matrix(NA,nrow = length(omegas),ncol = length(R0_avgs))
+mat_90 <- matrix(NA,nrow = length(omegas),ncol = length(R0_avgs))
+mat_95 <- matrix(NA,nrow = length(omegas),ncol = length(R0_avgs))
+mat_99 <- matrix(NA,nrow = length(omegas),ncol = length(R0_avgs))
+
+# store bifurcation data based on multiple thresholds
+for(i in 1:length(omegas)){
+  for(j in 1:length(R0_avgs)){
+    omega <- omegas[i]
+    R0_avg <- R0_avgs[j]
+        
+    week_start = 0
+      week <- seq(1,52,1)
+      qsim <-(0.006/2)*sin(2*pi*week/52 + 10.5) + 0.006 # based on fitting to NY q data
+      qsim[qsim < 0] <- 0
+      R0 = exp(-180*qsim + log(1.5)) + R0_avg-0.75
+      
+      times = seq(1, 52 * 73,by = 1)
+      R0.list <- rep(R0,length=length(times))
+    
+        week_start = 100000000
+        out = as.data.frame(ode(y = c(S = 0.19, I = 0.01, R = 0.8), times = times, 
+                                func = flu_SIRS, 
+                                parms = list(mu = 1/(50 * 52), N = 1, R0.list = R0.list,
+                                             gamma = 1, omega = omega, 
+                                             controlstart = (52*63+week_start), 
+                                             controlend =(52*63 + 52+week_start),
+                                             betachange = 1, 
+                                             controlstart2 = (52*400)-1 ,
+                                             controlend2 = (52*400))))
+      
+    out.sub <- out[out$time>(55*52),]
+    flu_I_counter <- out.sub$I
+    
+    if(any(is.na(flu_I_counter))){
+      label <- "none"
+      label_90 <- "none"
+      label_95 <- "none"
+      label_99 <- "none"
+      }else{
+        if(max(flu_I_counter)<1e-6){
+          label <- "none"
+          label_90 <- "none"
+          label_95 <- "none"
+          label_99 <- "none"
+          } else{
+            first_year <- max(flu_I_counter[1:52])
+            first_year_min <- min(flu_I_counter[1:52])
+            second_year <- max(flu_I_counter[53:104])
+            third_year <- max(flu_I_counter[105:156])
+            if(abs(first_year-third_year)>(first_year*0.025)){
+              label <- "other"
+              label_90 <- "other"
+              label_95 <- "other"
+              label_99 <- "other"
+              }else{
+                if(abs(first_year-second_year)>(max(c(first_year,
+                                              second_year))*0.05)){
+                  label <- "biennial"
+                  label_90 <- "biennial"
+                  label_95 <- "biennial"
+                  label_99 <- "biennial"
+                  }else{
+                    label <- "annual"
+                    if(first_year_min/first_year<=0.1){
+                      label_90 <- "annual"
+                    }else{
+                      label_90 <- "high_annual"
+                    }
+                    if(first_year_min/first_year<=0.05){
+                      label_95 <- "annual"
+                    }else{
+                      label_95 <- "high_annual"
+                    }
+                    if(first_year_min/first_year<=0.01){
+                      label_99 <- "annual"
+                    }else{
+                      label_99 <- "high_annual"
+                    }
+                  }
+              }
+          }
+        }
+    mat[i,j] <- label
+    mat_90[i,j] <- label_90
+    mat_95[i,j] <- label_95
+    mat_99[i,j] <- label_99
+  }
+}
+
+save(mat,file = "Biff_old.RData")
+save(mat_90,file = "Biff_90.RData")
+save(mat_95,file = "Biff_95.RData")
+save(mat_99,file = "Biff_99.RData")
+```
+
+```{r}
+# load parameters used
+R0_avgs <- seq(1,10, length.out = 100)
+omegas <- seq(1/520,0.025,length.out = 100)
+load("Biff_old.RData")
+load("Biff_90.RData")
+load("Biff_95.RData")
+load("Biff_99.RData")
+
+# reshape into nice data frame
+full_df <- data.frame(omegas = omegas[1], R0_avgs = R0_avgs[1], bif = mat[1,1],
+                      bif_90 = mat_90[1,1],bif_95 = mat_95[1,1],bif_99 = mat_99[1,1])
+
+for(i in 1:length(omegas)){
+  for(j in 1:length(R0_avgs)){
+    new_row <- data.frame(omegas = omegas[i], R0_avgs = R0_avgs[j], bif = mat[i,j],
+                      bif_90 = mat_90[i,j],bif_95 = mat_95[i,j],bif_99 = mat_99[i,j])
+    full_df <- rbind(full_df, new_row)
+  }
+}
+```
+
+
+```{r,eval = T}
+# set color scheme
+mako4 <- rev(viridisLite::mako(4))
+mako4[4] <- 'darkgrey'
+
+# select 5% threshold
+full_df$bif_group <- full_df$bif_95
+full_df$bif_group[full_df$bif_group %in% c("none", "other")] <- "other"
+
+# make bifurcation diagram
+plt <- ggplot(full_df, aes(x = omegas, y = R0_avgs, fill = bif_group)) +
+  geom_tile() +
+  scale_fill_manual(
+    values = mako4,
+    breaks = c("annual", "high_annual", "biennial", "other"),
+    labels = c("deep annual", "shallow annual", "biennial", "other")
+  ) +
+  guides(fill = guide_legend(nrow = 2)) +
+  theme_minimal() +
+  theme(panel.grid = element_blank()) +
+  labs(x = NULL, y = NULL, fill = NULL) +
+  theme(
+    legend.position = "bottom",
+    legend.direction = "horizontal"
+  )
+
+# Main plot with legend removed
+plt_main <- plt + theme_minimal() +
+  theme(legend.position = "none",panel.grid = element_blank())
+
+legend_only <- plt +
+  theme_void() +
+  theme(
+    legend.position = "bottom",
+    legend.direction = "horizontal",
+    plot.margin = margin(-5000, 0, 0, 0)
+  )
+
+print(plt_main)
+print(legend_only)
+
+plot_scalefac <- 0.7
+ggsave("figures/fig4/bifmap.png", plot = plt_main, width = plot_scalefac*5, height = plot_scalefac*5.5, dpi = 300,bg = "transparent")
+ggsave("figures/fig4/bifmap_legend.png", plot = legend_only, width = plot_scalefac*5, height = plot_scalefac*5.5, dpi = 300, bg = "transparent")
+
+```
+
+```{r,eval = F}
+# select parameters on the 10% threshold
+viable_df <- full_df[full_df$bif_90 == "annual",]
+
+# set empty variables for storage
+viable_df$midpeak_monthlyburden <- NA
+viable_df$offpeak_monthlyburden <- NA
+viable_df$prevpeak_monthlyburden <- NA
+
+viable_df$midpeak_3monthburden <- NA
+viable_df$offpeak_3monthburden <- NA
+viable_df$prevpeak_3monthburden <- NA
+
+viable_df$midpeak_maxannualburden <- NA
+viable_df$offpeak_maxannualburden <- NA
+viable_df$prevpeak_maxannualburden <- NA
+
+viable_df$midpeak_maxannualcases <- NA
+viable_df$offpeak_maxannualcases <- NA
+viable_df$prevpeak_maxannualcases <- NA
+
+viable_df$midpeak_longtermdiff <- NA
+viable_df$offpeak_longtermdiff <- NA
+viable_df$prevpeak_longtermdiff <- NA
+
+# compute metrics along all perturabtion timings
+for(nrow in 1:nrow(viable_df)){
+  omega <- viable_df$omegas[nrow]
+  R0_avg <- viable_df$R0_avgs[nrow]
+          
+  week <- seq(1,52,1)
+  qsim <-(0.006/2)*sin(2*pi*week/52 + 10.5) + 0.006 # based on fitting to NY q data
+  qsim[qsim < 0] <- 0
+  R0 = exp(-180*qsim + log(1.5)) + R0_avg-0.75
+        
+  times = seq(1, 52 * 73,by = 1)
+  R0.list <- rep(R0,length=length(times))
+    
+  week_start = 100000000
+  out = as.data.frame(ode(y = c(S = 0.19, I = 0.01, R = 0.8), times = times, 
+                          func = flu_SIRS, 
+                          parms = list(mu = 1/(50 * 52), N = 1, R0.list = R0.list,
+                                       gamma = 1, omega = omega, 
+                                       controlstart = (52*63+week_start), 
+                                       controlend =(52*63 + 52+week_start),
+                                       betachange = 1, 
+                                       controlstart2 = (52*400)-1 ,
+                                       controlend2 = (52*400))))
+    
+  out.sub <- out[out$time>(55*52),]
+  flu_I_counter <- out.sub$I
+      
+  first_year <- flu_I_counter[1:52]
+  t_max <- which.max(first_year)
+      
+  week_start <- t_max
+  
+  out = as.data.frame(ode(y = c(S = 0.19, I = 0.01, R = 0.8), times = times, 
+                          func = flu_SIRS, 
+                          parms = list(mu = 1/(50 * 52), N = 1, R0.list = R0.list,
+                                       gamma = 1, omega = omega, 
+                                       controlstart = (52*63+week_start), 
+                                       controlend =(52*63 + 52+week_start),
+                                       betachange = 0.6, 
+                                       controlstart2 = (52*400)-1 ,
+                                       controlend2 = (52*400))))
+  
+  out.sub <- out[out$time>(55*52),]
+  flu_I <- out.sub$I
+  
+  denom_window_len <- 51
+  month_metric <-rep(NA,length.out = (length(flu_I)-denom_window_len))
+  threemonth_metric <-rep(NA,length.out = (length(flu_I)-denom_window_len))
+  
+  for(i in 1:length(month_metric)){
+      num_len <- 4
+      num_window <- (i+denom_window_len-num_len):(i+denom_window_len)
+      denom_window <- i:(i+denom_window_len)
+      numerator <- sum(flu_I[num_window]-flu_I_counter[num_window])
+      denominator <- max(flu_I_counter[denom_window])
+      month_metric[i] <- numerator/denominator
+      
+      num_len <- 12
+      num_window <- (i+denom_window_len-num_len):(i+denom_window_len)
+      numerator <- sum(flu_I[num_window]-flu_I_counter[num_window])
+      threemonth_metric[i] <- numerator/denominator
+  }
+  
+  annual_metric <- rep(NA,length.out = 18)
+  max_metric <- rep(NA,length.out = 18)
+  for(i in 1:18){
+    tot_cases <- sum(flu_I[((i-1)*52+1):(i*52)])
+    annual_metric[i] <- tot_cases-sum(flu_I_counter[((i-1)*52+1):(i*52)])
+    max_metric[i] <- tot_cases
+  }
+  
+  viable_df$midpeak_monthlyburden[nrow] <- max(month_metric)
+  viable_df$midpeak_3monthburden[nrow] <- max(threemonth_metric)
+  viable_df$midpeak_maxannualburden[nrow] <- max(annual_metric)/max(flu_I_counter)
+  viable_df$midpeak_maxannualcases[nrow] <- max(max_metric)/max(flu_I_counter)
+  viable_df$midpeak_longtermdiff[nrow] <- (sum(flu_I)-sum(flu_I_counter))/max(flu_I_counter)
+  
+  ########## off peak
+  week_start <- t_max-26
+  
+  out = as.data.frame(ode(y = c(S = 0.19, I = 0.01, R = 0.8), times = times, 
+                          func = flu_SIRS, 
+                          parms = list(mu = 1/(50 * 52), N = 1, R0.list = R0.list,
+                                       gamma = 1, omega = omega, 
+                                       controlstart = (52*63+week_start), 
+                                       controlend =(52*63 + 52+week_start),
+                                       betachange = 0.6, 
+                                       controlstart2 = (52*400)-1 ,
+                                       controlend2 = (52*400))))
+  
+  out.sub <- out[out$time>(55*52),]
+  flu_I <- out.sub$I
+  
+  month_metric <-rep(NA,length.out = (length(flu_I)-denom_window_len))
+  threemonth_metric <-rep(NA,length.out = (length(flu_I)-denom_window_len))
+  
+  denom_window_len <- 51
+  for(i in 1:length(month_metric)){
+      num_len <- 4
+      num_window <- (i+denom_window_len-num_len):(i+denom_window_len)
+      denom_window <- i:(i+denom_window_len)
+      numerator <- sum(flu_I[num_window]-flu_I_counter[num_window])
+      denominator <- max(flu_I_counter[denom_window])
+      month_metric[i] <- numerator/denominator
+      
+      num_len <- 12
+      num_window <- (i+denom_window_len-num_len):(i+denom_window_len)
+      numerator <- sum(flu_I[num_window]-flu_I_counter[num_window])
+      threemonth_metric[i] <- numerator/denominator
+  }
+  
+  annual_metric <- rep(NA,length.out = 18)
+  max_metric <- rep(NA,length.out = 18)
+  for(i in 1:18){
+    tot_cases <- sum(flu_I[((i-1)*52+1):(i*52)])
+    annual_metric[i] <- tot_cases-sum(flu_I_counter[((i-1)*52+1):(i*52)])
+    max_metric[i] <- tot_cases
+  }
+  
+  viable_df$offpeak_monthlyburden[nrow] <- max(month_metric)
+  viable_df$offpeak_3monthburden[nrow] <- max(threemonth_metric)
+  viable_df$offpeak_maxannualburden[nrow] <- max(annual_metric)/max(flu_I_counter)
+  viable_df$offpeak_maxannualcases[nrow] <- max(max_metric)/max(flu_I_counter)
+  viable_df$offpeak_longtermdiff[nrow] <- (sum(flu_I)-sum(flu_I_counter))/max(flu_I_counter)
+  
+  
+  
+  ########## prev peak
+  week_start <- t_max-13
+  
+  out = as.data.frame(ode(y = c(S = 0.19, I = 0.01, R = 0.8), times = times, 
+                          func = flu_SIRS, 
+                          parms = list(mu = 1/(50 * 52), N = 1, R0.list = R0.list,
+                                       gamma = 1, omega = omega, 
+                                       controlstart = (52*63+week_start), 
+                                       controlend =(52*63 + 52+week_start),
+                                       betachange = 0.6, 
+                                       controlstart2 = (52*400)-1 ,
+                                       controlend2 = (52*400))))
+  
+  out.sub <- out[out$time>(55*52),]
+  flu_I <- out.sub$I
+  
+  month_metric <-rep(NA,length.out = (length(flu_I)-denom_window_len))
+  threemonth_metric <-rep(NA,length.out = (length(flu_I)-denom_window_len))
+  
+  denom_window_len <- 51
+  for(i in 1:length(month_metric)){
+      num_len <- 4
+      num_window <- (i+denom_window_len-num_len):(i+denom_window_len)
+      denom_window <- i:(i+denom_window_len)
+      numerator <- sum(flu_I[num_window]-flu_I_counter[num_window])
+      denominator <- max(flu_I_counter[denom_window])
+      month_metric[i] <- numerator/denominator
+      
+      num_len <- 12
+      num_window <- (i+denom_window_len-num_len):(i+denom_window_len)
+      numerator <- sum(flu_I[num_window]-flu_I_counter[num_window])
+      threemonth_metric[i] <- numerator/denominator
+  }
+  
+  annual_metric <- rep(NA,length.out = 18)
+  max_metric <- rep(NA,length.out = 18)
+  for(i in 1:18){
+    tot_cases <- sum(flu_I[((i-1)*52+1):(i*52)])
+    annual_metric[i] <- tot_cases-sum(flu_I_counter[((i-1)*52+1):(i*52)])
+    max_metric[i] <- tot_cases
+  }
+  
+  viable_df$prevpeak_monthlyburden[nrow] <- max(month_metric)
+  viable_df$prevpeak_3monthburden[nrow] <- max(threemonth_metric)
+  viable_df$prevpeak_maxannualburden[nrow] <- max(annual_metric)/max(flu_I_counter)
+  viable_df$prevpeak_maxannualcases[nrow] <- max(max_metric)/max(flu_I_counter)
+  viable_df$prevpeak_longtermdiff[nrow] <- (sum(flu_I)-sum(flu_I_counter))/max(flu_I_counter)
+  if ((nrow%%100)==0){
+    print(nrow)
+  }
+}
+save(viable_df,file = "mapdata_nohigh.RData")
+```
+
+
+```{r}
+# load results
+load("mapdata_nohigh.RData")
+mako <- viridisLite::mako(256)
+# keep only data that was annual on 5% threshold
+viable_df <- viable_df[viable_df$bif_95 == "annual",]
+# remove incorect points
+viable_df <- viable_df[viable_df$R0_avgs>1.5,]
+viable_df <- viable_df[!((viable_df$omegas<0.012645688) & (viable_df$R0_avgs<2)),]
+
+# plot short term burden heatmap
+plt <- ggplot(viable_df, aes(x = omegas, y = R0_avgs, fill = midpeak_monthlyburden)) +
+  geom_tile() +
+  scale_fill_gradientn(colors = mako) +  
+  theme_minimal()+
+  theme(panel.grid = element_blank()) +
+  labs(x = NULL, y = NULL, fill = NULL)+
+  geom_vline(xintercept = 0.002, color = "darkgrey", linetype = "dashed", linewidth = 1) +
+  geom_vline(xintercept = 0.01, color = "darkgrey", linetype = "dashed", linewidth = 1) +
+  geom_vline(xintercept = 0.02, color = "darkgrey", linetype = "dashed", linewidth = 1) +
+  geom_hline(yintercept = 2.2, color = "black", linetype = "dotted", linewidth = 1)+
+  geom_hline(yintercept = 5, color = "black", linetype = "dotted", linewidth = 1)+
+  geom_hline(yintercept = 2.8, color = "black", linetype = "dotted", linewidth = 1)
+
+print(plt)
+ggsave("figures/fig4/shortheatmap.png", plot = plt, width = 7*plot_scalefac, height = 5.5*plot_scalefac, dpi = 300)
+
+
+# plot long term burden heatmap
+plt2 <- ggplot(viable_df, aes(x = omegas, y = R0_avgs, fill = midpeak_longtermdiff)) +
+  geom_tile() +
+  scale_fill_gradientn(colors = mako) +  
+  theme_minimal()+
+  theme(panel.grid = element_blank()) +
+  labs(x = NULL, y = NULL, fill = NULL)+
+  geom_vline(xintercept = 0.002, color = "darkgrey", linetype = "dashed", linewidth = 1) +
+  geom_vline(xintercept = 0.01, color = "darkgrey", linetype = "dashed", linewidth = 1) +
+  geom_vline(xintercept = 0.02, color = "darkgrey", linetype = "dashed", linewidth = 1) #+
+  # geom_hline(yintercept = 2.2, color = "black", linetype = "dotted", linewidth = 1)+
+  # geom_hline(yintercept = 5, color = "black", linetype = "dotted", linewidth = 1)+
+  # geom_hline(yintercept = 2.8, color = "black", linetype = "dotted", linewidth = 1)
+print(plt2)
+ggsave("figures/fig4/longheatmap.png", plot = plt2,  width = 7*plot_scalefac, height = 5.5*plot_scalefac, dpi = 300)
+
+
+########### making horizontal slices
+R0_select <- c(2.2,2.8,5)
+for(R0_avg in R0_select){
+  idx <- which.min(abs(viable_df$R0_avgs - R0_avg))
+  value <- viable_df$R0_avgs[idx]
+  sub <- viable_df[viable_df$R0_avgs==value, ]
+  png(paste0("figures/fig4/shortR0lineplt_",R0_avg,".png"), width =2.5*plot_scalefac, height = 2*plot_scalefac,
+units = 'in',res =300)
+  par(mar = c(2,2,0.5,0.75))
+  plot(sub$omegas,sub$midpeak_monthlyburden, type = 'l',lwd = 2, bty = 'l',
+       ylab ="",xlab =""#,ylim = c(0,max(sub$midpeak_monthlyburden))
+       )
+  dev.off()
+  
+  png(paste0("figures/fig4/longR0lineplt_",R0_avg,".png"), width =2.5*plot_scalefac, height = 2*plot_scalefac,
+units = 'in',res =300)
+  par(mar = c(2,2,0.5,0.75))
+  plot(sub$omegas,sub$midpeak_longtermdiff, type = 'l',lwd = 2, bty = 'l',
+       ylab ="",xlab =""#,ylim = c(-11,4)
+       )
+  dev.off()
+}
+
+
+
+############### making vertical slices
+
+omega_select <- c(0.001,0.01,0.02)
+for(omega in omega_select){
+  idx <- which.min(abs(viable_df$omegas - omega))
+  value <- viable_df$omegas[idx]
+  sub <- viable_df[viable_df$omegas==value, ]
+  png(paste0("figures/fig4/shortomegalineplt_",omega,".png"), width =2.5*plot_scalefac, height = 2*plot_scalefac,
+units = 'in',res =300)
+  par(mar = c(2,2,0.5,0.75))
+  plot(sub$R0_avgs,sub$midpeak_monthlyburden, type = 'l',lwd = 2, bty = 'l',
+       ylab ="",xlab =""#,ylim = c(0,max(sub$midpeak_monthlyburden))
+       )
+  dev.off()
+  
+  png(paste0("figures/fig4/longomegalineplt_",omega,".png"), width =2.5*plot_scalefac, height = 2*plot_scalefac,
+units = 'in',res =300)
+  par(mar = c(2,2,0.5,0.75))
+  plot(sub$R0_avgs,sub$midpeak_longtermdiff, type = 'l',lwd = 2, bty = 'l',
+       ylab ="",xlab =""#,ylim = c(-11,4)
+       )
+  dev.off()
+}
+```
+
+
+```{r}
+# make plots of modeling association between short and long-term burdens
+cols <- colorRampPalette(c("#24492E", "grey86"))(100)
+
+png("figures/fig5/model_shortvslong_omega.png", width =5.5, height = 3,
+    units = 'in',res =300)
+par(mar = c(2, 2, 0.5, 0.5))
+plot(
+  viable_df$midpeak_monthlyburden,
+  viable_df$midpeak_longtermdiff,
+  col = cols[cut(viable_df$omegas, breaks = 100)],
+  pch = 16,
+  bty = 'l'
+)
+dev.off()
+
+
+png("figures/fig5/legend_shortvslong_omega.png", width =1, height = 2.5,
+    units = 'in',res =300)
+par(mar = c(0.5, 0.5, 0.5, 0.5))
+plot.new()
+image.plot(legend.only = TRUE, col = cols, 
+           zlim =c(min(viable_df$omegas),max(viable_df$omegas)),
+           legend.lab = "",legend.line = 2,
+           smallplot   = c(0.2, 0.3,0.1, 0.9),
+           horizontal = F)
+dev.off()
+
+cols <- colorRampPalette(c("#4C6194", "grey86"))(100)
+
+png("figures/fig5/model_shortvslong_R0.png", width =5.5, height = 3,
+    units = 'in',res =300)
+par(mar = c(2, 2, 0.5, 0.5))
+plot(
+  viable_df$midpeak_monthlyburden,
+  viable_df$midpeak_longtermdiff,
+  col = cols[cut(viable_df$R0_avgs, breaks = 100)],
+  pch = 16,
+  bty = 'l'
+)
+dev.off()
+
+png("figures/fig5/legend_shortvslong_R0.png", width =1, height = 2.5,
+    units = 'in',res =300)
+par(mar = c(0.5, 0.5, 0.5, 0.5))
+plot.new()
+image.plot(legend.only = TRUE, col = cols, 
+           zlim =c(min(viable_df$R0_avgs),max(viable_df$R0_avgs)),
+           legend.lab = "",legend.line = 2,
+           smallplot   = c(0.2, 0.3,0.1, 0.9),
+           horizontal = F)
+dev.off()
+```
+
+
+```{r}
+# interpolate along omega
+interp_dat <- with(
+  viable_df,
+  interp(
+    x = midpeak_monthlyburden,
+    y = midpeak_longtermdiff,
+    z = omegas,
+    duplicate = "mean"
+  )
+)
+
+# make plot
+png("figures/supplement/Contour_omega.png", width =5, height = 4,
+    units = 'in',res =300)
+par(mar = c(4, 4, 0.5, 0.5))
+contour(
+  interp_dat$x,
+  interp_dat$y,
+  interp_dat$z,
+  xlab = "Max Short-Term Burden",
+  ylab = "Max Long-Term Burden",
+  bty = 'l',
+  drawlabels = TRUE
+)
+dev.off()
+
+# interpolate along R0
+interp_dat <- with(
+  viable_df,
+  interp(
+    x = midpeak_monthlyburden,
+    y = midpeak_longtermdiff,
+    z = R0_avgs,
+    duplicate = "mean"
+  )
+)
+
+# make plot
+png("figures/supplement/Contour_R0.png", width =5, height = 4,
+    units = 'in',res =300)
+par(mar = c(4, 4, 0.5, 0.5))
+contour(
+  interp_dat$x,
+  interp_dat$y,
+  interp_dat$z,
+  xlab = "Max Short-Term Burden",
+  ylab = "Max Long-Term Burden",
+  bty = 'l',
+  drawlabels = TRUE
+)
+dev.off()
+```
+
+
+
+## dynamics along cross sections
+```{r,eval=FALSE}
+# set parameters of cross section
+###### R0_fixed slice
+# omega_select <- seq(0.006,0.015,length.out = 10)
+# R0_select <- 2.7
+###### omega fixed slice
+omega_select <- 0.01
+R0_select <- seq(2.4,3.3, length.out = 10)
+
+# loop and save plotted dynamics
+for(R0_avg in R0_select){
+  idx <- which.min(abs(viable_df$R0_avgs - R0_avg))
+  value <- viable_df$R0_avgs[idx]
+  for(omega in omega_select){
+    week_start = 0
+    week <- seq(1,52,1)
+    qsim <-(0.006/2)*sin(2*pi*week/52 + 10.5) + 0.006 # based on fitting to NY q data
+    qsim[qsim < 0] <- 0
+    R0 = exp(-180*qsim + log(1.5)) + value-0.75
+    
+    times = seq(1, 52 * 73,by = 1)
+  R0.list <- rep(R0,length=length(times))
+    
+    week_start = 100000000
+  out = as.data.frame(ode(y = c(S = 0.19, I = 0.01, R = 0.8), times = times, 
+                          func = flu_SIRS, 
+                          parms = list(mu = 1/(50 * 52), N = 1, R0.list = R0.list,
+                                       gamma = 1, omega = omega, 
+                                       controlstart = (52*63+week_start), 
+                                       controlend =(52*63 + 52+week_start),
+                                       betachange = 1, 
+                                       controlstart2 = (52*400)-1 ,
+                                       controlend2 = (52*400))))
+    
+  out.sub <- out[out$time>(55*52),]
+  flu_I_counter <- out.sub$I
+      
+  first_year <- flu_I_counter[1:52]
+  t_max <- which.max(first_year)
+      
+  week_start <- t_max
+  
+  out = as.data.frame(ode(y = c(S = 0.19, I = 0.01, R = 0.8), times = times, 
+                          func = flu_SIRS, 
+                          parms = list(mu = 1/(50 * 52), N = 1, R0.list = R0.list,
+                                       gamma = 1, omega = omega, 
+                                       controlstart = (52*63+week_start), 
+                                       controlend =(52*63 + 52+week_start),
+                                       betachange = 0.6, 
+                                       controlstart2 = (52*400)-1 ,
+                                       controlend2 = (52*400))))
+  
+  out.sub <- out[out$time>(55*52),]
+  flu_I <- out.sub$I
+      png(paste0("figures/supplement/fig4dynamics/",omega,"R0",R0_avg,".png"),
+          width =3, height = 2.5,units = 'in',res =300)
+      idxs_to_plot <- (3*52):(14*52)
+      par(mar = c(2,2,0.5,0.75))
+      plot(flu_I[idxs_to_plot]/max(first_year),type = 'l',main = "", col = 'black', lwd = 2,
+           ylim = c(0,6),
+           bty = 'l',bty = 'l',ylab ="",xlab ="")
+      lines(flu_I_counter[idxs_to_plot]/max(first_year), lty =2, col = 'red', lwd =2)
+      abline(v = 5*52+52+week_start, lty = 2, col = 'grey', lwd = 2)
+      abline(v = 5*52+week_start,lty = 2, col = 'grey', lwd = 2)
+      dev.off()
+  }
+}
+```
+
+
+
+## Extended heatmaps of four metrics and three perturbation timings
+```{r}
+# load in heatmap data
+load("mapdata_nohigh.RData")
+# remove incorrect points
+viable_df <- viable_df[viable_df$R0_avgs>1.5,]
+viable_df <- viable_df[-c(994),]
+
+# set colors
+mako <- viridisLite::mako(256)
+
+# plot and save heat maps
+metrics <- c("monthlyburden","3monthburden","maxannualburden","longtermdiff")
+shifts <- c("prevpeak","midpeak","offpeak")
+for(i in 1:length(shifts)){
+  for(j in 1:length(metrics)){
+    metric_name <- paste0(shifts[i],"_",metrics[j])
+    plt <- ggplot(viable_df, aes(x = omegas, y = R0_avgs, 
+                                 fill = round(.data[[metric_name]],8))) +
+  geom_tile() +
+  scale_fill_gradientn(colors = mako) +   
+  labs(x = NULL, y = NULL, fill = NULL) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),          # removes grey background grid
+    legend.position = "bottom"             # moves legend to bottom
+  ) +
+  guides(fill = guide_colorbar(
+    direction = "horizontal",
+    barwidth = 10,
+    barheight = 0.8
+  ))
+    print(plt)
+    ggsave(paste0("figures/heat_all/",metric_name,".png"), plot = plt,
+    height = 4, width = 3.75, dpi = 300)
+  }
+}
+```
+
