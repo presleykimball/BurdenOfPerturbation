@@ -7,7 +7,7 @@ output: html_document
 
 ## Set up
 ```{r}
-setwd("C:/Users/prkimbal/Research/SIR(S)/")
+setwd(INPUT PATH HERE)
 library(akima)
 library(cowplot)
 library(deSolve)
