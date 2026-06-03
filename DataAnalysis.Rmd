@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 ---
 title: "Untitled"
 author: "Presley Kimball"
@@ -637,3 +638,644 @@ text(plt.dat$short[idx_tolabel],
 dev.off()
 ```
 
+=======
+---
+title: "Untitled"
+author: "Presley Kimball"
+output: html_document
+---
+
+## Set up and Data Extraction
+```{r}
+setwd(INPUT PATH HERE)
+library(fields)
+library(RColorBrewer)
+library(paletteer)
+library(ggplot2)
+library(PNWColors)
+```
+
+
+```{r}
+# list names of all columns to pull from data
+cols_to_pull <- c("Influenza.excld..avian.influenza.and.pandemic.influenza.",
+                  "Respiratory.syncytial.virus.infection",
+                  "Pharyngoconjunctival.fever",
+                  "Group.A.streptococcal.pharyngitis",
+                  "Infectious.gastroenteritis",
+                  "Hand..foot.and.mouth.disease",
+                  "Erythema.infection",
+                  "Exanthem.subitum",
+                  "Herpangina",
+                  "Acute.hemorrhagic.conjunctivitis",
+                  "Epidemic.keratoconjunctivitis",
+                  "Bacterial.meningitis",
+                  "Aseptic.meningitis",
+                  "Mycoplasma.pneumonia",
+                  "Chlamydial.pneumonia.excluding.psittacosis.")
+
+all_cols <- c("Influenza.cases","RSV.cases","PCF.cases",
+          "AStrep.cases","Gastro.cases",
+          "HFMD.cases",
+          "Erythema.cases","Exanthem.cases","Herpangina.cases",
+          "hemo.conj.cases","keratoconj.cases","bact.meningitis.cases",
+          "Aseptic.meningitis.cases","Mpneumoniae.cases",
+          "Chlamydial.pneumonia.cases"
+          )
+
+# name columns and 'names' of specific disease wanted for analysis
+cols <- c("Erythema.cases","Influenza.cases","RSV.cases","Mpneumoniae.cases",
+          "PCF.cases","Herpangina.cases")
+names <- c("Erythema","Influenza", "RSV","M. pneumoniae",
+           "Pharyngoconj. fever","Herpangina")
+
+# pull data from file folders
+year_folds <- list.files("Japan_surveillance_2015_2023")
+full.data <- data.frame()
+for (i in 1:length(cols)){
+full.data[[cols[i]]]  <- numeric()
+}
+full.data$year <- integer()
+full.data$week.of.year <- integer()
+for (i in 1:(length(year_folds)-1)){
+  current_fold <- year_folds[i]
+  week_files <- list.files(paste0("Japan_surveillance_2015_2023/",
+                                  current_fold))
+  for (j in 1:52){
+    sub <- read.csv(paste0("Japan_surveillance_2015_2023/",
+                           current_fold,"/",week_files[j]),skip = 3)
+    sub <- sub[, !grepl("X", colnames(sub))]
+    sub <- sub[2,]
+    sub <- sub[, colnames(sub) %in% cols_to_pull]
+    sub <- sub[,cols_to_pull]
+    colnames(sub) <- all_cols
+    sub$year <- current_fold
+    sub$week.of.year <- j
+    full.data <- rbind(full.data,sub)
+    }
+}
+
+# replace all empty values with 0
+full.data[full.data == "-"] <- 0
+
+# ensure numeric values
+for(disease in all_cols){
+  full.data[[disease]] <- as.numeric(full.data[[disease]])
+}
+
+
+# set color scale for figures later on
+colors <-c(pnw_palette("Starfish", 12)[c(1,3,6,9,11)],"#F4AA78")
+barplot(rep(1,length.out = length(colors)),col = colors)
+```
+
+
+## Incidence data time series plots
+```{r}
+# set color scales
+reds <- colorRampPalette(c("#341539", "#D8AAE0"))(5)
+greys <- colorRampPalette(c("#5c5c5c","lightgrey"))(5)
+
+# remove 2014 due to missing data
+tot.data <- full.data[full.data$year != 2014,]
+
+# set storage path
+path <- "figures/fig1/"
+
+# make plots
+for (nname in 1:length(cols)){
+  
+  # call current disease and name
+  curcol <- cols[nname]
+  name <- names[nname]
+  i = 1
+  png(paste0(path,curcol,".png"),width =3.1, height = 3,
+      units = 'in',res =300)
+  # plot each year of cases
+  for (year in unique(tot.data$year)){
+    sub <- tot.data[tot.data$year == year,]
+    if (year == 2015){
+      par(mar = c(2, 2, 3, 0.5))
+      plot(sub$week.of.year,sub[[curcol]], 
+           type = 'l',ylim = c(0,max(tot.data[[curcol]]*1.1)), col = greys[i],lwd = 2.5,
+           xlab = "",ylab = "",main = name, bty = "l")
+    } else if (year <2020) {
+      i <- i+1
+      lines(sub$week.of.year,sub[[curcol]], col = greys[i],lwd = 2.5)
+    } else {
+      i <- i+1
+      lines(sub$week.of.year,sub[[curcol]], col = reds[i-5],lwd = 2.5)
+    }
+  }
+  dev.off()
+}
+
+# make a color bar for label 
+full_colors <- c(greys, reds)
+png(paste0(path,"caselegend.png"), width =4, height = 2,
+    units = 'in',res =300)
+par(mar = c(0.5, 0.5, 0.5, 0.5))
+plot.new()
+image.plot(legend.only = TRUE, col = full_colors, zlim =c(2015,2024),
+           legend.lab = "",legend.line = 2,
+           smallplot   = c(0.1, 0.9,0.5, 0.55),
+           horizontal = T)
+dev.off()
+
+```
+
+
+```{r}
+# make data frame version of cumulative cases of above data
+sum_cases <-data.frame("week" = 0:520)
+
+# compute running cumulative cases and store cases at each step
+for(j in 1:length(all_cols)){
+  sum_cases[[paste0(all_cols[j],".sum")]] <- 0
+  sum_cases[[paste0(all_cols[j],".act")]] <- 0
+  i = 2
+  for (year in 2015:2024){
+    sub = tot.data[tot.data$year == year,]
+    for (week in 1:52){
+      new_cases <- sub[[all_cols[j]]][week]
+      sum_cases[[paste0(all_cols[j],".sum")]][i] <- new_cases +
+        sum_cases[[paste0(all_cols[j],".sum")]][i-1]
+      sum_cases[[paste0(all_cols[j],".act")]][i] <- new_cases
+      i = i +1
+    }
+  }
+}
+
+png("figures/fig1/CumulativeCases.png", width =8, height = 5.6,
+    units = 'in',res =300)
+par(mar = c(2,2,0.5,0.5))
+
+# set time to take norm of cases
+year_of_norm = 5 
+
+# plot cumulative cases for each disease
+for(i in 1:(length(cols))){
+  tseries <- sum_cases[[paste0(cols[i],".sum")]]
+  tseries <- tseries/tseries[52*year_of_norm+11]
+  if(i == 1){
+    plot(tseries,type = 'l', lwd = 3.5,
+     ylim = c(0,2),
+     ylab = "Norm. Cummulative Cases", xlab = "Weeks", col = colors[i], bty = 'l')
+  }else{
+    lines(tseries, lwd = 3.5, col = colors[i])
+  }
+}
+# add vertical line at time of normalization
+abline(v = 52*year_of_norm, lwd = 2, lty = 2, col = "grey")
+legend("topleft",legend = c(names, 2020),col = c(colors,"grey"), 
+       lwd = c(8,8,8,8,8,8,4),lty = c(1,1,1,1,1,1,2))
+dev.off()
+```
+
+## Computation of counterfactual predictions
+```{r}
+# Set number of Fourier terms to include in statistical counterfactual
+num_terms <- 10
+for (term in c(0.5,1:num_terms)) {
+  sum_cases[[paste0("cos", term)]] <- cos( 2*pi * term * sum_cases$week / 52)
+  sum_cases[[paste0("sin", term)]] <- sin( 2*pi * term * sum_cases$week / 52)
+}
+
+# make formula in terms of terms above
+fourier_terms <- paste(
+  c(paste0("cos", c(0.5,1:num_terms)), paste0("sin", c(0.5,1:num_terms))),
+  collapse = " + "
+)
+
+# set training data to be precovid
+dat.precovid <-sum_cases[sum_cases$week < (52*year_of_norm+11),]
+
+# fit regression model to Fourier forumulation from above for each disease
+fits <- list()
+for(disease in all_cols){
+  eqn <- paste0("log(",disease, ".act + 1) ~ ", fourier_terms)
+  fits[[disease]] <- lm(eqn, data = dat.precovid)
+
+  # predict the counter factual
+  log_cases <- predict(fits[[disease]], newdata = sum_cases)
+  sum_cases[[paste0(disease,".counter")]] <- exp(log_cases)-1
+}
+
+
+```
+
+## Compution of burden metrics
+```{r}
+for(disease in all_cols){
+  # ensure counterfactual on the training period is exactly the true data
+  sum_cases[[paste0(disease,".counter")]][sum_cases$week <(52*5+11)] <-
+    sum_cases[[paste0(disease,".act")]][sum_cases$week <(52*5+11)]
+  
+  # initialize metrics
+  sum_cases[[paste0(disease,".short_monthly")]] <- 0
+  sum_cases[[paste0(disease,".short_3month")]] <- 0
+  sum_cases[[paste0(disease,".long")]] <- 0
+
+  
+  # compute metrics
+  denom_window_len <- 51
+  for(i in (denom_window_len+1):nrow(sum_cases)){
+    # monthly metric
+    num_len <- 4
+      num_window <- (i-num_len):(i)
+      denom_window <- (i-denom_window_len):(i)
+      numerator <- sum(sum_cases[[paste0(disease,".act")]][num_window]-
+                         sum_cases[[paste0(disease,".counter")]][num_window])
+      denominator <- max(sum_cases[[paste0(disease,".counter")]][denom_window])
+      sum_cases[[paste0(disease,".short_monthly")]][i] <- numerator/denominator
+      
+      # three month metric
+      num_len <- 12
+      num_window <- (i-num_len):(i)
+      numerator <- sum(sum_cases[[paste0(disease,".act")]][num_window]-
+                         sum_cases[[paste0(disease,".counter")]][num_window])
+      sum_cases[[paste0(disease,".short_3month")]][i] <- numerator/denominator
+    
+      # long term metric
+      numerator <- sum(sum_cases[[paste0(disease,".act")]][1:i]-
+                         sum_cases[[paste0(disease,".counter")]][1:i])
+      sum_cases[[paste0(disease,".long")]][i] <- numerator/
+        max(sum_cases[[paste0(disease,".counter")]])
+    
+  }
+}
+
+# set all na values to 0
+for(i in 1:ncol(sum_cases)){
+  sum_cases[is.nan(sum_cases[,i]),i] <- 0
+}
+
+```
+
+```{r}
+# plot counterfactual predictions for supplement
+path <- "figures/supplement/counterfactual/"
+for(i in 1:length(all_cols)){
+  disease <- all_cols[i]
+  # name <- names[i]
+  png(paste0(path,disease,".png"), width =4, height = 2.5,
+    units = 'in',res =300)
+  par(mar = c(2, 2, 3, 0.5))
+  plot(sum_cases[[paste0(disease,".counter")]], type = 'l', col = 'red',
+       ylim = c(0,1.1*max(c(max(sum_cases[[paste0(disease,".counter")]]),
+                            max(sum_cases[[paste0(disease,".act")]])))),
+       ylab = "", xlab = "weeks", main = "",lwd = 2,bty = 'l')
+  lines(sum_cases[[paste0(disease,".act")]], lwd = 2)
+  dev.off()
+}
+
+# make legend for plots
+png(paste0(path,"tserieslegend.png"), width =4, height = 2,
+units = 'in',res =300)
+par(mar = c(0.5, 0.5, 0.5, 0.5))
+plot.new()
+legend('center',legend = c("actual","counterfactual"), 
+       col = c('black','red'), lty = 1, lwd = 2, horiz = T)
+dev.off()
+
+```
+
+# plot of burden metrics on data
+```{r}
+
+j <- 1
+
+idx_toplot <- 150:nrow(sum_cases)
+
+png("figures/fig5/shortmetric.png", width =6, height = 4.5,
+    units = 'in',res =300)
+# make plot of time series for monthly metric
+metric_name <- ".short_monthly"
+for(disease in cols){
+  if (j == 1){
+    par(mar=c(2,2,0.5,9))
+    plot(sum_cases[[paste0(disease,metric_name)]][idx_toplot], 
+         type = 'l', ylim = c(-5,22),col= colors[j], lwd =3, 
+         bty = 'u',ylab = '',xlab = '',yaxt = 'n')
+    axis(2)
+    
+    # find max and arg max
+    met_max <- max(sum_cases[[paste0(disease,metric_name)]][idx_toplot])
+    xargmax <- which.max(sum_cases[[paste0(disease,metric_name)]][idx_toplot])
+    
+    # plot segment connecting to max
+    segments(x0 = xargmax, 
+         y0 = met_max, 
+         x1 = par("usr")[2], 
+         y1 = met_max,lty = 2, lwd = 2, col = 'grey42')
+    text(par("usr")[2], met_max,
+     labels = names[j],
+     pos = 4, xpd = TRUE)
+    
+  } else{
+    lines(sum_cases[[paste0(disease,metric_name)]][idx_toplot],col= colors[j], lwd = 3)
+    
+    # find max and argmax
+    met_max <- max(sum_cases[[paste0(disease,metric_name)]][idx_toplot])
+    xargmax <- which.max(sum_cases[[paste0(disease,metric_name)]][idx_toplot])
+    
+    # plot segment connecting to max
+    segments(x0 = xargmax, 
+         y0 = met_max, 
+         x1 = par("usr")[2], 
+         y1 = met_max,lty = 2, lwd = 2, col = 'grey42')
+    text(par("usr")[2], met_max,
+     labels = names[j],
+     pos = 4, xpd = TRUE)
+  }
+  j = j +1
+}
+legend("topleft",legend = names, col = colors, lwd = 8,lty = 1)
+dev.off()
+
+# make plot of time series of long term metric
+png("figures/fig5/longmetric.png", width =6, height = 4.5,
+    units = 'in',res =300)
+j = 1
+metric_name <- ".long"
+for(disease in cols){
+  if (j == 1){
+    par(mar=c(2,2,0.5,9))
+    plot(sum_cases[[paste0(disease,metric_name)]][idx_toplot], 
+         type = 'l', ylim = c(-50,20),col= colors[j], lwd =3, 
+         bty = 'u',ylab = '',xlab = '',yaxt = 'n')
+    axis(2)
+    
+    # place segment connecting the end value to name
+    end_val <- sum_cases[[paste0(disease,metric_name)]][nrow(sum_cases)]
+    segments(x0 = length(idx_toplot), 
+         y0 = end_val, 
+         x1 = par("usr")[2], 
+         y1 = end_val,lty = 2, lwd = 2, col = 'grey42')
+    text(par("usr")[2], end_val,
+     labels = names[j],
+     pos = 4, xpd = TRUE)
+    
+  } else{
+    lines(sum_cases[[paste0(disease,metric_name)]][idx_toplot],col= colors[j], lwd = 3)
+    
+    # place segment connecting the end value to name
+    end_val <- sum_cases[[paste0(disease,metric_name)]][nrow(sum_cases)]
+    segments(x0 = length(idx_toplot), 
+         y0 = end_val, 
+         x1 = par("usr")[2], 
+         y1 = end_val,lty = 2, lwd = 2, col = 'grey42')
+    text(par("usr")[2], end_val,
+     labels = names[j],
+     pos = 4, xpd = TRUE)
+  }
+  j = j +1
+}
+# legend("topleft",legend = names, col = colors, lwd = 2,lty = 1)
+dev.off()
+```
+
+
+
+
+## Data plots of simple metrics
+```{r}
+# reshape data and store max and total cases for each disease and year
+i <- 1
+for (disease in all_cols){
+  for (year in unique(tot.data$year)){
+    sub <- tot.data[[disease]][tot.data$year == year]
+    annual_tot_cases <- sum(sub)
+    annual_max_cases <- max(sub)
+    if (i == 1){
+      relplt.dat <- data.frame(disease = disease,
+                               year = year,
+                               annual_tot_cases = annual_tot_cases,
+                               annual_max_cases = annual_max_cases)
+      i = i+1
+    } else{
+      new.dat <- data.frame(disease = disease,
+                               year = year,
+                               annual_tot_cases = annual_tot_cases,
+                               annual_max_cases = annual_max_cases)
+      relplt.dat <- rbind(relplt.dat,new.dat)
+    }
+  }
+}
+
+# for each disease, compute mean and max cases
+i <- 1
+for (disease in all_cols){
+  sub_pre <- relplt.dat[(relplt.dat$disease == disease) &
+                          (relplt.dat$year <2020),]
+  sub_post <- relplt.dat[(relplt.dat$disease == disease) &
+                          (relplt.dat$year >=2020),]
+  rel.meancases <- mean(sub_post$annual_tot_cases)/
+    mean(sub_pre$annual_tot_cases)
+  rel.maxtot <- max(sub_post$annual_tot_cases)/
+    mean(sub_pre$annual_tot_cases)
+  rel.maxpeak <- max(sub_post$annual_max_cases)/
+    mean(sub_pre$annual_max_cases)
+  if (i == 1){
+    plt.dat <- data.frame(disease = disease,
+                          rel.meancases= rel.meancases,
+                          rel.maxtot=rel.maxtot,
+                          rel.maxpeak= rel.maxpeak)
+    i <- i+1
+  } else{
+    new.dat <- data.frame(disease = disease,
+                          rel.meancases= rel.meancases,
+                          rel.maxtot=rel.maxtot,
+                          rel.maxpeak= rel.maxpeak)
+    plt.dat <- rbind(plt.dat,new.dat)
+  }
+}
+
+# make scatter plots of values
+path <- "figures/fig1/"
+png(paste0(path,"relmaxtot.png"),width =4.2, height = 4.2, units = 'in',res =300)
+par(mar = c(2, 2, 0.5, 0.5))
+plot(plt.dat$rel.meancases,plt.dat$rel.maxtot, bty = 'l', pch = 16, 
+     xlab = "Rel. Mean Annual Cases", ylab = "Rel. Max Tot. Annual Cases",
+     ylim = c(min(plt.dat$rel.maxtot),1.01*max(plt.dat$rel.maxtot)),
+     xlim = c(min(plt.dat$rel.meancases)-0.07,1.16*max(plt.dat$rel.meancases)))
+idx_tolabel <- match(cols,all_cols)
+text(plt.dat$rel.meancases[idx_tolabel],
+     plt.dat$rel.maxtot[idx_tolabel],
+     labels = names,pos = 3,offset = 0.3)
+dev.off()
+png(paste0(path,"relmaxpeak.png"),width =4.2, height = 4.2, units = 'in',res =300)
+par(mar = c(2, 2, 0.5, 0.5))
+plot(plt.dat$rel.meancases,plt.dat$rel.maxpeak, bty = 'l', pch = 16, 
+     xlab = "Rel. Mean Annual Cases", ylab = "Rel. Max Peak Cases",
+     ylim = c(min(plt.dat$rel.maxpeak),1.1*max(plt.dat$rel.maxpeak)),
+     xlim = c(min(plt.dat$rel.meancases)-0.1,1.2*max(plt.dat$rel.meancases)))
+idx_tolabel <- match(cols,all_cols)
+text(plt.dat$rel.meancases[idx_tolabel],
+     plt.dat$rel.maxpeak[idx_tolabel],
+     labels = names,pos = 3)
+dev.off()
+```
+
+
+```{r}
+
+# compute error bars for all diseases
+i<- 1
+for (disease in cols){
+  sub_pre <- relplt.dat[(relplt.dat$disease == disease) &
+                          (relplt.dat$year <2020),]
+  sub_post <- relplt.dat[(relplt.dat$disease == disease) &
+                          (relplt.dat$year >=2020),]
+  premax.mean <- mean(sub_pre$annual_max_cases)
+  pretot.mean <- mean(sub_pre$annual_tot_cases)
+  sub_pre$annual_max_cases <- sub_pre$annual_max_cases/premax.mean
+  sub_pre$annual_tot_cases <- sub_pre$annual_tot_cases/pretot.mean
+  sub_post$annual_max_cases <- sub_post$annual_max_cases/premax.mean
+  sub_post$annual_tot_cases <- sub_post$annual_tot_cases/pretot.mean
+  premax.mean <- mean(sub_pre$annual_max_cases)
+  pretot.mean <- mean(sub_pre$annual_tot_cases)
+  premax.lb <- premax.mean-1.96*sd(sub_pre$annual_max_cases)
+  premax.ub <- premax.mean+1.96*sd(sub_pre$annual_max_cases)
+  pretot.lb <- pretot.mean - 1.96*sd(sub_pre$annual_tot_cases)
+  pretot.ub <- pretot.mean + 1.96*sd(sub_pre$annual_tot_cases)
+  
+  postmax.max <- max(sub_post$annual_max_cases)
+  posttot.max <- max(sub_post$annual_tot_cases)
+  
+  relmean <- mean(sub_post$annual_tot_cases)/mean(sub_pre$annual_tot_cases)
+  
+  if(i == 1){
+    lineplt.dat <- data.frame(name = names[i],
+                              disease = disease,
+                              premax.mean = premax.mean,
+                              pretot.mean = pretot.mean,
+                              premax.lb = premax.lb,
+                              premax.ub = premax.ub,
+                              pretot.lb = pretot.lb,
+                              pretot.ub = pretot.ub,
+                              postmax.max = postmax.max,
+                              posttot.max = posttot.max,
+                              relmean = relmean)
+    
+  } else{
+    newdata <- data.frame(name = names[i],
+                          disease = disease,
+                          premax.mean = premax.mean,
+                              pretot.mean = pretot.mean,
+                              premax.lb = premax.lb,
+                              premax.ub = premax.ub,
+                              pretot.lb = pretot.lb,
+                              pretot.ub = pretot.ub,
+                              postmax.max = postmax.max,
+                              posttot.max = posttot.max,
+                          relmean = relmean)
+    lineplt.dat <- rbind(lineplt.dat,newdata)
+  }
+  i = i+1
+}
+
+# make line plots
+plot1 <- ggplot(lineplt.dat, aes(x = premax.mean, y = reorder(name, postmax.max))) +
+  geom_point(size = 2) +
+  geom_point(aes(x = postmax.max), size = 4, shape = 18, color = "#8E399C") +
+  geom_errorbarh(aes(xmin = premax.lb, xmax = premax.ub),
+                 height = 0.2) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = 
+               'grey') +
+  theme_minimal() +
+  labs(x = "Rel. Annual Max Cases", y = "")
+figscale <- 0.8
+ggsave("figures/fig1/maxlineplt.png", plot = plot1, width = 4.5*figscale, height = 3*figscale, dpi  =300)
+
+plot2 <- ggplot(lineplt.dat, aes(x = pretot.mean, y = reorder(name, postmax.max))) +
+  geom_point(size = 2) +
+  geom_point(aes(x = relmean), size = 4, shape = 18, color = '#8E399C') +
+  geom_errorbarh(aes(xmin = pretot.lb, xmax = pretot.ub),
+                 height = 0.2) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = 
+               'grey') +
+  theme_minimal() +
+  labs(x = "Rel. Annual Total Cases", y = "")+
+  theme(axis.text.y = element_blank(),axis.ticks.y = element_blank())
+
+ggsave("figures/fig1/totlineplt.png", plot = plot2, width = 3.5*figscale, height = 3*figscale, dpi  =300)
+
+```
+
+
+```{r}
+# compute max of monthly metric and last of the long metric time series
+plt.dat$short <- 0
+plt.dat$long <- 0
+for (disease in all_cols){
+  plt.dat$short[plt.dat$disease == disease] <- max(sum_cases[[paste0(disease,".short_monthly")]])
+  plt.dat$long[plt.dat$disease == disease] <- sum_cases[[paste0(disease,".long")]][nrow(sum_cases)]
+}
+
+# make scater plots of monthly and long metric against simple metrics
+png("figures/fig5/relmeanvsshort.png", width =4.5, height = 4.5,
+    units = 'in',res =300)
+par(mar = c(2, 2, 0.5, 0.5))
+plot(plt.dat$rel.meancases,plt.dat$short, pch = 19, bty ='l',
+     xlab = '',ylab = '', ylim = c(0,1.1*max(plt.dat$short)),
+     xlim = c(0,1.2*max(plt.dat$rel.meancases)))
+idx_tolabel <- match(cols,plt.dat$disease)
+text(plt.dat$rel.meancases[idx_tolabel],
+     plt.dat$short[idx_tolabel],
+     labels = names,pos = 3)
+dev.off()
+
+png("figures/fig5/maxpeakvsshort.png", width =4.5, height = 4.5,
+    units = 'in',res =300)
+par(mar = c(2, 2, 0.5, 0.5))
+plot(plt.dat$rel.maxpeak,plt.dat$short, pch = 19, bty ='l',
+     xlab = '',ylab = '', ylim = c(0,1.1*max(plt.dat$short)),
+     xlim = c(0,1.2*max(plt.dat$rel.maxpeak)))
+idx_tolabel <- match(cols,plt.dat$disease)
+text(plt.dat$rel.maxpeak[idx_tolabel],
+     plt.dat$short[idx_tolabel],
+     labels = names,pos = 3)
+dev.off()
+
+
+png("figures/fig5/relmeanvslong.png",width =4.5, height = 4.5,
+    units = 'in',res =300)
+par(mar = c(2, 2, 0.5, 0.5))
+plot(plt.dat$rel.meancases,plt.dat$long, pch = 19, bty ='l',
+     xlab = '',ylab = '', ylim = c(1.1*min(plt.dat$long),1.2*max(plt.dat$long)),
+     xlim = c(0,1.2*max(plt.dat$rel.meancases)))
+idx_tolabel <- match(cols,plt.dat$disease)
+text(plt.dat$rel.meancases[idx_tolabel],
+     plt.dat$long[idx_tolabel],
+     labels = names,pos = 3)
+dev.off()
+
+png("figures/fig5/maxpeakvslong.png", width =4.5, height = 4.5,
+    units = 'in',res =300)
+par(mar = c(2, 2, 0.5, 0.5))
+plot(plt.dat$rel.maxpeak,plt.dat$long, pch = 19, bty ='l',
+     xlab = '',ylab = '', ylim = c(1.1*min(plt.dat$long),1.2*max(plt.dat$long)),
+     xlim = c(0,1.2*max(plt.dat$rel.maxpeak)))
+idx_tolabel <- match(cols,plt.dat$disease)
+text(plt.dat$rel.maxpeak[idx_tolabel],
+     plt.dat$long[idx_tolabel],
+     labels = names,pos = 3)
+dev.off()
+
+```
+
+```{r}
+png("figures/fig5/data_shortvslong.png", width =5.5, height = 3,
+    units = 'in',res =300)
+par(mar = c(2, 2, 0.5, 0.5))
+plot(plt.dat$short,plt.dat$long,bty = 'l', pch = 19,
+     ylim = c(min(plt.dat$long),30))
+idx_tolabel <- match(cols,plt.dat$disease)
+text(plt.dat$short[idx_tolabel],
+     plt.dat$long[idx_tolabel],
+     labels = names,pos = 3)
+dev.off()
+```
+
+>>>>>>> 25d325fa6142fb56f30aafcfa0140d43270906b1
