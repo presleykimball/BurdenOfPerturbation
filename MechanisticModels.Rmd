@@ -3516,4 +3516,921 @@ for(i in 1:length(shifts)){
 }
 ```
 
+## Supplement figure of metrics over entire parameter space
+
+```{r,eval = F}
+R0_avgs <- seq(1,10, length.out = 100)
+omegas <- seq(1/520,0.025,length.out = 100)
+load("Biff_old.RData")
+load("Biff_90.RData")
+load("Biff_95.RData")
+load("Biff_99.RData")
+full_df <- data.frame(omegas = omegas[1], R0_avgs = R0_avgs[1], bif = mat[1,1],
+                      bif_90 = mat_90[1,1],bif_95 = mat_95[1,1],bif_99 = mat_99[1,1])
+
+for(i in 1:length(omegas)){
+  for(j in 1:length(R0_avgs)){
+    new_row <- data.frame(omegas = omegas[i], R0_avgs = R0_avgs[j], bif = mat[i,j],
+                          bif_90 = mat_90[i,j],bif_95 = mat_95[i,j],bif_99 = mat_99[i,j])
+    full_df <- rbind(full_df, new_row)
+  }
+}
+
+
+viable_df <- full_df
+
+viable_df$midpeak_monthlyburden <- NA
+viable_df$midpeak_3monthburden <- NA
+viable_df$midpeak_maxannualburden <- NA
+viable_df$midpeak_maxannualcases <- NA
+viable_df$midpeak_longtermdiff <- NA
+# system.time(
+  for(nrow in 1:nrow(viable_df)){
+    omega <- viable_df$omegas[nrow]
+    R0_avg <- viable_df$R0_avgs[nrow]
+    
+    week <- seq(1,52,1)
+    qsim <-(0.006/2)*sin(2*pi*week/52 + 10.5) + 0.006 # based on fitting to NY q data
+    qsim[qsim < 0] <- 0
+    R0 = exp(-180*qsim + log(1.5)) + R0_avg-0.75
+    
+    times = seq(1, 52 * 73,by = 1)
+    R0.list <- rep(R0,length=length(times))
+    
+    week_start = 100000000
+    out = as.data.frame(ode(y = c(S = 0.19, I = 0.01, R = 0.8), times = times, 
+                            func = flu_SIRS, 
+                            parms = list(mu = 1/(50 * 52), N = 1, R0.list = R0.list,
+                                         gamma = 1, omega = omega, 
+                                         controlstart = (52*63+week_start), 
+                                         controlend =(52*63 + 52+week_start),
+                                         betachange = 1, 
+                                         controlstart2 = (52*400)-1 ,
+                                         controlend2 = (52*400))))
+    
+    out.sub <- out[out$time>(55*52),]
+    flu_I_counter <- out.sub$I
+    
+    first_year <- flu_I_counter[1:52]
+    t_max <- which.max(first_year)
+    
+    week_start <- t_max
+    
+    out <- tryCatch({
+      # Attempt to run the ODE solver
+      as.data.frame(ode(
+        y = c(S = 0.19, I = 0.01, R = 0.8), 
+        times = times, 
+        func = flu_SIRS, 
+        parms = list(mu = 1/(50 * 52), N = 1, R0.list = R0.list,
+                     gamma = 1, omega = omega, 
+                     controlstart = (52 * 63 + week_start), 
+                     controlend = (52 * 63 + 52 + week_start),
+                     betachange = 0.6, 
+                     controlstart2 = (52 * 400) - 1,
+                     controlend2 = (52 * 400))
+      ))
+    }, error = function(e) {
+      # If an error happens, return NA instead of crashing
+      return(NA)
+    })
+    if(!all(is.na(out))){
+      out.sub <- out[out$time>(55*52),]
+      flu_I <- out.sub$I
+      
+      denom_window_len <- 51
+      month_metric <-rep(NA,length.out = (length(flu_I)-denom_window_len))
+      threemonth_metric <-rep(NA,length.out = (length(flu_I)-denom_window_len))
+      
+      for(i in 1:length(month_metric)){
+        num_len <- 4
+        num_window <- (i+denom_window_len-num_len):(i+denom_window_len)
+        denom_window <- i:(i+denom_window_len)
+        numerator <- sum(flu_I[num_window]-flu_I_counter[num_window])
+        denominator <- max(flu_I_counter[denom_window])
+        month_metric[i] <- numerator/denominator
+        
+        num_len <- 12
+        num_window <- (i+denom_window_len-num_len):(i+denom_window_len)
+        numerator <- sum(flu_I[num_window]-flu_I_counter[num_window])
+        threemonth_metric[i] <- numerator/denominator
+      }
+      
+      annual_metric <- rep(NA,length.out = 18)
+      max_metric <- rep(NA,length.out = 18)
+      for(i in 1:18){
+        tot_cases <- sum(flu_I[((i-1)*52+1):(i*52)])
+        annual_metric[i] <- tot_cases-sum(flu_I_counter[((i-1)*52+1):(i*52)])
+        max_metric[i] <- tot_cases
+      }
+      
+      viable_df$midpeak_monthlyburden[nrow] <- max(month_metric)
+      viable_df$midpeak_3monthburden[nrow] <- max(threemonth_metric)
+      viable_df$midpeak_maxannualburden[nrow] <- max(annual_metric)/max(flu_I_counter)
+      viable_df$midpeak_maxannualcases[nrow] <- max(max_metric)/max(flu_I_counter)
+      viable_df$midpeak_longtermdiff[nrow] <- (sum(flu_I)-sum(flu_I_counter))/max(flu_I_counter)
+    }else{
+      viable_df$midpeak_monthlyburden[nrow] <- NA
+      viable_df$midpeak_3monthburden[nrow] <- NA
+      viable_df$midpeak_maxannualburden[nrow] <- NA
+      viable_df$midpeak_maxannualcases[nrow] <-NA
+      viable_df$midpeak_longtermdiff[nrow] <- NA
+    }
+    if ((nrow%%100)==0){
+      print(nrow)
+    }
+  }
+# )
+save(viable_df, file = "FullParmSpace_Metrics.RData")
+```
+
+
+```{r}
+stars <- data.frame(xs = c(0.002, 0.007, 0.012, 0.02),
+                    ys = c(4.8, 3.5, 4.8, 7.5))
+
+
+load("FullParmSpace_Metrics.RData")
+viable_df <- viable_df[viable_df$R0_avgs>1.5,]
+viable_df <- viable_df[viable_df$midpeak_monthlyburden<45,]
+viable_df <- viable_df[viable_df$midpeak_longtermdiff>-20,]
+mako <- viridisLite::mako(256)
+
+annual_viable <- viable_df[viable_df$bif_95=="annual",]
+annual_viable <- annual_viable[!is.na(annual_viable$bif_95),]
+omegas <- sort(unique(annual_viable$omegas))
+R0_low <- rep(NA, length.out = length(omegas))
+R0_high <- rep(NA, length.out = length(omegas))
+
+for(i in 1:length(omegas)){
+  sub <- annual_viable[annual_viable$omegas == omegas[i],]
+  R0_low[i] <- min(sub$R0_avgs)
+  R0_high[i] <- max(sub$R0_avgs)
+}
+upper_omegas <- omegas[omegas>0.0055]
+high_annual_viable <- viable_df[viable_df$bif_95=="high_annual",]
+high_annual_viable <- high_annual_viable[!is.na(high_annual_viable$bif_95),]
+
+R0_high_upper_boundary <- rep(NA, length.out = length(upper_omegas))
+
+R0_high_upper_boundary[1] <- 10
+for(i in 2:length(upper_omegas)){
+  sub <- high_annual_viable[high_annual_viable$omegas == upper_omegas[i],]
+  sub <- sub[order(sub$R0_avgs),]
+  sub <- sub[which.max(sub$midpeak_monthlyburden):nrow(sub),]
+  if(nrow(sub)>1){
+    diffs <- diff(sub$midpeak_monthlyburden)
+    idx.drop <- which.min(diffs)+1
+    R0_high_upper_boundary[i] <- sub$R0_avgs[idx.drop]
+  }else{
+    R0_high_upper_boundary[i] <- sub$R0_avgs[1]
+  }
+}
+# linear interpolate to correct missed boundaries
+R0_high_upper_boundary[2] <- (10+9.545455)/2
+R0_high_upper_boundary[4] <- (9.545455+9)/2
+R0_high_upper_boundary[10] <- (8.090909+7.727273)/2
+
+metrics <- c("monthlyburden","longtermdiff")
+shifts <- c("midpeak")
+for(i in 1:length(shifts)){
+  for(j in 1:length(metrics)){
+    metric_name <- paste0(shifts[i],"_",metrics[j])
+    annual_viable <- viable_df[viable_df$bif_95 == "annual",]
+    
+    
+    plt <- ggplot(viable_df, aes(x = omegas, y = R0_avgs, 
+                                 fill = round(.data[[metric_name]], 8))) +
+      geom_tile() +
+      scale_fill_gradientn(colors = mako) +   
+      theme_minimal()+
+      theme(panel.grid = element_blank()) +
+      labs(x = NULL, y = NULL, fill = NULL)+
+      
+      # Add the smooth boundary line cleanly
+      geom_line(data = data.frame(x_line = omegas, y_line = R0_high), 
+                aes(x = x_line, y = y_line), 
+                color = "red",       
+                linewidth = 1, 
+                inherit.aes = FALSE) +  
+      geom_line(data = data.frame(x_line = omegas, y_line = R0_low), 
+                aes(x = x_line, y = y_line), 
+                color = "red",       
+                linewidth = 1, 
+                inherit.aes = FALSE) + 
+      geom_line(data = data.frame(x_line = upper_omegas, y_line = R0_high_upper_boundary), 
+                aes(x = x_line, y = y_line), 
+                color = "red",       
+                linewidth = 1, 
+                inherit.aes = FALSE,
+                linetype = "dashed")+
+      geom_point(data = stars, aes(x = xs, y = ys), inherit.aes = FALSE,
+                 shape = 21, fill = "white", color = "black", size = 4)
+      ggsave(paste0("figures/supplement/mega_fig_pt2/heat_",metric_name,".png"),
+             height = 4.5*0.8, width = 6*0.8)
+    print(plt)
+  }
+}
+```
+
+
+
+```{r}
+library(cowplot)
+viable_df <- viable_df[!is.na(viable_df$midpeak_longtermdiff),]
+viable_df <- viable_df[!is.na(viable_df$midpeak_monthlyburden),]
+
+
+annual_sub <- viable_df[viable_df$bif_95 == "annual",]
+annual_sub <- annual_sub[!is.na(annual_sub$bif_95),]
+high_annual_sub <- viable_df[viable_df$bif_95 == "high_annual",]
+high_annual_sub <- high_annual_sub[!is.na(high_annual_sub$bif_95),]
+
+
+high_annual_sub$where <- NA
+for(i in 1:nrow(high_annual_sub)){
+  cur_omega <- high_annual_sub$omegas[i]
+  cur_R0 <- high_annual_sub$R0_avgs[i]
+  idx_all <- (omegas == cur_omega)
+  idx_upper <- (upper_omegas == cur_omega)
+  if(any(idx_upper)){
+    low <- R0_low[idx_all]
+    mid <- R0_high[idx_all]
+    high <- R0_high_upper_boundary[idx_upper]
+    if(cur_R0<= low){
+      high_annual_sub$where[i] <- 1
+    }else if((cur_R0> low)&(cur_R0<= mid)){
+      high_annual_sub$where[i] <- 2
+    } else if((cur_R0> mid)&(cur_R0<= high)){
+      high_annual_sub$where[i] <- 3
+    } else if (cur_R0 >high){
+      high_annual_sub$where[i] <- 4
+    }
+  }else{
+    low <- R0_low[idx_all]
+    mid <- R0_high[idx_all]
+    if(cur_R0<= low){
+      high_annual_sub$where[i] <- 1
+    }else if((cur_R0> low)&(cur_R0<= mid)){
+      high_annual_sub$where[i] <- 2
+    } else if((cur_R0> mid)){
+      high_annual_sub$where[i] <- 3
+    }
+  }
+  
+}
+
+mako4 <- rev(viridisLite::mako(4))
+mako4[4] <- 'darkgrey'
+
+plt <- ggplot(data = viable_df, aes(x = midpeak_monthlyburden, 
+                             y = midpeak_longtermdiff, 
+                             fill = bif_95)) +
+  geom_point(shape = 21, color = "black", size = 2, stroke = 0.5)+
+  theme_minimal() +
+  theme(panel.grid = element_blank(),
+        legend.position = "bottom",
+    legend.direction = "horizontal") +
+  scale_fill_manual(
+    values = mako4,
+    breaks = c("annual", "high_annual", "biennial", "other"),
+    labels = c("deep annual", "shallow annual", "biennial", "other")
+  ) + labs(x = NULL, y = NULL, fill = NULL)
+print(plt)
+ggsave(paste0("figures/supplement/mega_fig_pt2/STBvsLTB_All.png"),plot = plt,
+             height = 4*0.8, width = 6*0.8)
+
+high_annual_sub$where <- as.factor(high_annual_sub$where)
+plt <- ggplot(data = high_annual_sub, aes(x = midpeak_monthlyburden, 
+                             y = midpeak_longtermdiff, 
+                             fill = where)) +
+  theme_minimal() +
+  theme(panel.grid = element_blank(),
+        legend.position = "bottom",
+    legend.direction = "horizontal") +
+  geom_point(shape = 21, color = "black", size = 2, stroke = 0.5)+
+  scale_fill_manual(
+    values = c("#FF6F59","#38AAACFF","#8A95A5"),
+    breaks = c(1,3,4),
+    labels = c("I","III","IV")
+  )+
+  labs(x = NULL, y = NULL, fill = NULL)
+
+leg <- cowplot::get_plot_component(plt, "guide-box-bottom")
+
+plt_nolegend <- plt + theme(legend.position = "none")
+
+print(plt)
+ggsave(paste0("figures/supplement/mega_fig_pt2/STBvsLTB_shallowannual.png"),
+       plot = plt_nolegend, height = 3.3*0.8, width = 6*0.8)
+ggsave("figures/supplement/mega_fig_pt2/high_annual_legend.png",
+       ggdraw(leg), width = 6*0.8, height = 0.5, dpi = 300)
+```
+
+```{r}
+library(akima)
+
+lv   <- sort(unique(high_annual_sub$where))          # 1, 3, 4
+cols <- setNames(c("#FF6F59","#38AAACFF","#8A95A5"), lv)
+
+xr   <- range(high_annual_sub$midpeak_monthlyburden, na.rm = TRUE)
+yr   <- range(high_annual_sub$midpeak_longtermdiff,  na.rm = TRUE)
+zlev <- pretty(range(high_annual_sub$omegas, na.rm = TRUE), 8)  # shared contour levels
+
+
+png("figures/supplement/mega_fig_pt2/omega_contour.png",
+    height = 3.3*0.8, width = 6*0.8,units = "in", res = 300)
+par(mar = c(2, 2, 0.5, 0.5))
+plot(NA, xlim = xr, ylim = yr, xlab = "", ylab = "", bty = "l")
+
+for (w in lv) {
+  d <- high_annual_sub[high_annual_sub$where == w, ]
+  ip <- interp(
+    x = d$midpeak_monthlyburden,
+    y = d$midpeak_longtermdiff,
+    z = d$omegas,
+    duplicate = "mean"
+  )
+  contour(ip$x, ip$y, ip$z,
+          # levels = zlev,
+          col = cols[as.character(w)],
+          drawlabels = TRUE,
+          add = TRUE,
+          lwd = 2)
+}
+
+# legend("topright", legend = paste("where =", lv),
+#        col = cols, lty = 1, bty = "n")
+
+dev.off()
+
+lv   <- sort(unique(high_annual_sub$where))          # 1, 3, 4
+cols <- setNames(c("#FF6F59","#38AAACFF","#8A95A5"), lv)
+
+xr   <- range(high_annual_sub$midpeak_monthlyburden, na.rm = TRUE)
+yr   <- range(high_annual_sub$midpeak_longtermdiff,  na.rm = TRUE)
+zlev <- pretty(range(high_annual_sub$omegas, na.rm = TRUE), 8)  # shared contour levels
+
+
+png("figures/supplement/mega_fig_pt2/R0_contour.png",
+    height = 3.3*0.8, width = 6*0.8,units = "in", res = 300)
+par(mar = c(2, 2, 0.5, 0.5))
+plot(NA, xlim = xr, ylim = yr, xlab = "", ylab = "", bty = "l")
+
+for (w in lv) {
+  d <- high_annual_sub[high_annual_sub$where == w, ]
+  ip <- interp(
+    x = d$midpeak_monthlyburden,
+    y = d$midpeak_longtermdiff,
+    z = d$R0_avgs,
+    duplicate = "mean"
+  )
+  contour(ip$x, ip$y, ip$z,
+          # levels = zlev,
+          col = cols[as.character(w)],
+          drawlabels = TRUE,
+          add = TRUE,
+          lwd = 2)
+}
+
+# legend("topright", legend = paste("where =", lv),
+#        col = cols, lty = 1, bty = "n")
+dev.off()
+```
+
+
+
+```{r}
+stars <- data.frame(xs = c(0.002, 0.007, 0.012, 0.02),
+                    ys = c(4.8, 3.5, 4.8, 7.5))
+for(idx in 1:4){
+  omega <- stars$xs[idx]
+  R0_avg <- stars$ys[idx]
+  week_start = 0
+  week <- seq(1,52,1)
+  qsim <-(0.006/2)*sin(2*pi*week/52 + 10.5) + 0.006 # based on fitting to NY q data
+  qsim[qsim < 0] <- 0
+  R0 = exp(-180*qsim + log(1.5)) + R0_avg-0.75
+  
+  times = seq(1, 52 * 73,by = 1)
+  R0.list <- rep(R0,length=length(times))
+  
+  week_start = 100000000
+  out = as.data.frame(ode(y = c(S = 0.19, I = 0.01, R = 0.8), times = times, 
+                          func = flu_SIRS, 
+                          parms = list(mu = 1/(50 * 52), N = 1, R0.list = R0.list,
+                                       gamma = 1, omega = omega, 
+                                       controlstart = (52*63+week_start), 
+                                       controlend =(52*63 + 52+week_start),
+                                       betachange = 1, 
+                                       controlstart2 = (52*400)-1 ,
+                                       controlend2 = (52*400))))
+  
+  out.sub <- out[out$time>(55*52),]
+  flu_I_counter <- out.sub$I
+  
+  first_year <- flu_I_counter[1:52]
+  t_max <- which.max(first_year)
+  
+  week_start <- t_max
+  
+  out = as.data.frame(ode(y = c(S = 0.19, I = 0.01, R = 0.8), times = times, 
+                          func = flu_SIRS, 
+                          parms = list(mu = 1/(50 * 52), N = 1, R0.list = R0.list,
+                                       gamma = 1, omega = omega, 
+                                       controlstart = (52*63+week_start), 
+                                       controlend =(52*63 + 52+week_start),
+                                       betachange = 0.6, 
+                                       controlstart2 = (52*400)-1 ,
+                                       controlend2 = (52*400))))
+  
+  out.sub <- out[out$time>(55*52),]
+  flu_I <- out.sub$I
+  png(paste0("figures/supplement/mega_fig_pt2/dynams",omega,"R0",R0_avg,".png"),
+      width =3, height = 2.5,units = 'in',res =300)
+  idxs_to_plot <- (3*52):(14*52)
+  par(mar = c(2,2,0.5,0.75))
+  plot(flu_I[idxs_to_plot]/max(first_year),type = 'l',main = "", col = 'black', lwd = 2,
+       ylim = c(0,4),
+       bty = 'l',bty = 'l',ylab ="",xlab ="")
+  lines(flu_I_counter[idxs_to_plot]/max(first_year), lty =2, col = 'red', lwd =2)
+  abline(v = 5*52+52+week_start, lty = 2, col = 'grey', lwd = 2)
+  abline(v = 5*52+week_start,lty = 2, col = 'grey', lwd = 2)
+  dev.off()
+}
+```
+
+## surface figure of metric dependence on pathogen parameters
+```{r}
+load("mapdata_nohigh.RData")
+mako <- viridisLite::mako(256)
+# choose subset to make figure nice (also within normal endemic range)
+viable_df <- viable_df[viable_df$bif_95 == "annual",]
+viable_df <- viable_df[viable_df$R0_avgs>1.5,]
+viable_df <- viable_df[!((viable_df$omegas<0.012645688) &
+                           (viable_df$R0_avgs<2)),]
+
+R0_avgs <- sort(unique(viable_df$R0_avgs))
+omegas <- sort(unique(viable_df$R0_avgs))
+```
+
+
+```{r}
+library(ggplot2)
+library(ggnewscale)
+
+df <- data.frame(x    = viable_df$midpeak_monthlyburden,
+                 y    = viable_df$midpeak_longtermdiff,
+                 z    = viable_df$omegas,
+                 r    = viable_df$R0_avgs)
+# fix a smaller window within acceptable parameters
+df <- df[df$r <= 6, ]
+df <- df[df$x <= 20, ]
+
+# fit splines across R_0
+n_grid <- 60
+
+fit_strand <- function(s) {
+  r0 <- s$r[1]                                   
+  s  <- aggregate(cbind(x, y) ~ z, data = s, FUN = mean)
+  s  <- s[order(s$z), ]
+  if (nrow(s) < 6) return(NULL)
+
+  k  <- min(8, nrow(s) - 1)
+  fx <- smooth.spline(s$z, s$x, df = k)
+  fy <- smooth.spline(s$z, s$y, df = k)
+  zg <- seq(min(s$z), max(s$z), length.out = n_grid)   
+  list(r = r0,
+       x = predict(fx, zg)$y,
+       y = predict(fy, zg)$y,
+       z = zg)
+}
+
+strands <- split(df, df$r)
+strands <- strands[order(as.numeric(names(strands)))]
+fits    <- Filter(Negate(is.null), lapply(strands, fit_strand))
+
+rv <- sapply(fits, `[[`, "r")
+X  <- do.call(rbind, lapply(fits, `[[`, "x"))
+Y  <- do.call(rbind, lapply(fits, `[[`, "y"))
+Z  <- do.call(rbind, lapply(fits, `[[`, "z"))
+
+smooth_cols <- function(M, df_r) {
+  apply(M, 2, function(col) predict(smooth.spline(rv, col, df = df_r), rv)$y)
+}
+df_r <- min(20, length(rv) - 1)     
+X <- smooth_cols(X, df_r)
+Y <- smooth_cols(Y, df_r)
+Z <- smooth_cols(Z, df_r)
+
+Rmat <- matrix(rv, nrow = nrow(X), ncol = ncol(X))
+
+# interpolate down onto level sets
+omega_levels <- sort(unique(df$z))[round(rev(seq(11, 86, length.out = 6)))]
+R0_levels    <- sort(unique(df$r))[round(rev(seq(4, 48, length.out = 7)))]
+
+# fixed omega curve
+level_curve <- function(lv) {
+  pts <- t(sapply(seq_len(nrow(Z)), function(i) {
+    z <- Z[i, ]
+    if (lv < min(z) || lv > max(z)) return(c(NA_real_, NA_real_))
+    o <- order(z)
+    c(approx(z[o], X[i, o], xout = lv)$y,
+      approx(z[o], Y[i, o], xout = lv)$y)
+  }))
+  data.frame(x = pts[, 1], y = pts[, 2], z = lv, r = rv)
+}
+
+omega_curves <- do.call(rbind, lapply(omega_levels, function(lv) {
+  cv <- level_curve(lv)
+  cv$level <- lv
+  cv$row   <- seq_len(nrow(cv))
+  cv
+}))
+
+# fixed R0 curve
+r_level_curve <- function(lv) {
+  if (lv < min(rv) || lv > max(rv)) return(NULL)
+  data.frame(
+    x = sapply(seq_len(ncol(X)), function(j) approx(rv, X[, j], xout = lv)$y),
+    y = sapply(seq_len(ncol(Y)), function(j) approx(rv, Y[, j], xout = lv)$y),
+    z = sapply(seq_len(ncol(Z)), function(j) approx(rv, Z[, j], xout = lv)$y),
+    r = lv
+  )
+}
+
+R0_curves <- do.call(rbind, lapply(R0_levels, function(lv) {
+  cv <- r_level_curve(lv)
+  if (is.null(cv)) return(NULL)
+  cv$level <- lv
+  cv$row   <- seq_len(nrow(cv))
+  cv
+}))
+```
+
+```{r}
+omega_cols <- setNames(colorRampPalette(c("#F1D3AE", "#A5691C"))(length(omega_levels)),
+                       sort(omega_levels))
+R0_cols    <- setNames(colorRampPalette(c("#B3CBEC", "#1E4477"))(length(R0_levels)),
+                       sort(R0_levels))
+library(plot3D)
+opac_lvl <- 0.2
+
+make_palette <- function(cols, lo, hi, n = 512) {
+  v   <- as.numeric(names(cols))
+  pos <- pmin(pmax((v - lo) / (hi - lo), 0), 1)
+  pos <- c(0, pos, 1)
+  col <- c(cols[1], unname(cols), cols[length(cols)])
+  keep <- !duplicated(pos, fromLast = TRUE)
+  pos <- pos[keep]; col <- col[keep]
+  rgbm <- col2rgb(col)
+  grid <- seq(0, 1, length.out = n)
+  ch   <- sapply(1:3, function(i) approx(pos, rgbm[i, ], xout = grid, rule = 2)$y)
+  rgb(ch[, 1], ch[, 2], ch[, 3], maxColorValue = 255)
+}
+
+omega_pal <- make_palette(omega_cols, min(Z),    max(Z))
+R0_pal    <- make_palette(R0_cols,    min(Rmat), max(Rmat))
+
+xx <- as.matrix(X); yy <- as.matrix(Y) 
+
+zlim1 <- range(c(Z, R0_curves$z), na.rm = TRUE)
+
+pdf("figures/fig5/surface_z_omega.pdf", width = 5, height = 5)
+persp3D(x = xx, y = yy, z = Z, colvar = Z,
+        col = omega_pal, clim = range(Z), zlim = zlim1,
+        alpha = opac_lvl, border = NA, colkey = FALSE,
+        theta = -30, 
+        phi = 0, ticktype = "detailed",
+        bty = "u",                 
+        col.grid = "transparent",  
+        col.panel = "white",      
+        xlab = "", ylab = "", zlab = "")
+
+for (lv in unique(R0_curves$level)) {
+  cv <- R0_curves[R0_curves$level == lv, ]
+  lines3D(x = cv$x, y = cv$y, z = cv$z, add = TRUE,
+          col = R0_cols[as.character(lv)], lwd = 2.5)
+}
+dev.off()
+
+## level sets
+pdf("figures/fig5/lvlsets_omega.pdf", width = 5, height = 5)
+z_floor <- zlim1[1]     # bottom of the z-axis
+lines3D(x = range(xx), y = range(yy), z = rep(z_floor, 2),
+        xlim = range(xx), ylim = range(yy), zlim = zlim1,
+        col = "white", lwd = 0.1,
+        theta = -15, phi = 90, ticktype = "detailed",
+        bty = "n", col.grid = "transparent", col.panel = "white",
+        xlab = "", ylab = "", zlab = "")
+
+lines3D(x = c(min(xx),min(xx)), y = range(yy), z = c(z_floor,z_floor), nrow(seg), add = TRUE,
+            col = "black", lwd = 0.5, lty = 1)
+lines3D(x = range(xx), y = c(min(yy),min(yy)), z = c(z_floor,z_floor), nrow(seg), add = TRUE,
+            col = "black", lwd = 0.5, lty = 1)
+
+for (lv in unique(R0_curves$level)) {
+  cv <- R0_curves[R0_curves$level == lv, ]
+  lines3D(x = cv$x, y = cv$y, z = rep(z_floor, nrow(cv)), add = TRUE,
+          col = R0_cols[as.character(lv)], lwd = 2.5)
+}
+dev.off()
+
+
+### plot 2
+pdf("figures/fig5/surface_z_R0.pdf", width = 5, height = 5)
+zlim2 <- range(c(Rmat, omega_curves$r), na.rm = TRUE)
+
+persp3D(x = xx, y = yy, z = Rmat, colvar = Rmat,
+        col = R0_pal, clim = range(Rmat), zlim = zlim2,
+        alpha = opac_lvl, border = NA, colkey = FALSE,
+        theta = -30, phi = 0, ticktype = "detailed", 
+        bty = "u",                 
+        col.grid = "transparent",  
+        col.panel = "white",       
+        xlab = "", ylab = "", zlab = "")
+
+for (lv in unique(omega_curves$level)) {
+  cv  <- omega_curves[omega_curves$level == lv, ]
+  cv  <- cv[order(cv$row), ]
+  ok  <- complete.cases(cv[, c("x", "y", "r")])
+  run <- cumsum(!ok)                       
+  col <- omega_cols[as.character(lv)]
+
+  for (g in unique(run[ok])) {
+    seg <- cv[ok & run == g, ]
+    if (nrow(seg) < 2) next
+    lines3D(x = seg$x, y = seg$y, z = seg$r, add = TRUE,
+            col = unname(col), lwd = 2.5)
+  }
+}
+dev.off()
+# level sets
+z_floor <- zlim2[1]     # bottom of the z-axis
+pdf("figures/fig5/lvlsets_R0.pdf", width = 5, height = 5)
+lines3D(x = range(xx), y = range(yy), z = rep(z_floor, 2),
+        xlim = range(xx), ylim = range(yy), zlim = zlim2,
+        col = "white", lwd = 0.1,
+        theta = -15, phi = 90, ticktype = "detailed",
+        bty = "n", col.grid = "transparent", col.panel = "white",
+        xlab = "", ylab = "", zlab = "")
+
+lines3D(x = c(min(xx),min(xx)), y = range(yy), z = c(z_floor,z_floor), nrow(seg), add = TRUE,
+            col = "black", lwd = 0.5, lty = 1)
+lines3D(x = range(xx), y = c(min(yy),min(yy)), z = c(z_floor,z_floor), nrow(seg), add = TRUE,
+            col = "black", lwd = 0.5, lty = 1)
+for (lv in unique(omega_curves$level)) {
+  cv  <- omega_curves[omega_curves$level == lv, ]
+  cv  <- cv[order(cv$row), ]
+  ok  <- complete.cases(cv[, c("x", "y", "r")])
+  run <- cumsum(!ok)
+  col <- omega_cols[as.character(lv)]
+
+  for (g in unique(run[ok])) {
+    seg <- cv[ok & run == g, ]
+    if (nrow(seg) < 2) next
+    lines3D(x = seg$x, y = seg$y, z = rep(z_floor, nrow(seg)), add = TRUE,
+            col = unname(col), lwd = 2, lty = 1)
+  }
+}
+
+dev.off()
+
+##plot 3
+t_level <- 0.8
+p3 <- ggplot() +
+  geom_path(data = omega_curves, aes(x, y, group = level, colour = factor(level)),
+            linewidth = 1, na.rm = TRUE, alpha = t_level) +
+  scale_colour_manual(name = "omega", values = omega_cols) +
+  new_scale_color() +
+  geom_path(data = R0_curves, aes(x, y, group = level, colour = factor(level)),
+            linewidth = 1, na.rm = TRUE, alpha = t_level) +
+  scale_colour_manual(name = "R0", values = R0_cols) +
+  geom_point(data = df, aes(x, y), color = "black", size = 1.5, alpha = 0.6,
+             shape = 21, fill = "#4a4a4a") +
+
+  labs(x = "", y = "") +
+  theme_minimal()+
+  theme_classic()+
+  theme(legend.position = "none")
+
+p3
+scale_fact <- 0.8
+ggsave(filename = "figures/fig5/sim_shortvlong.pdf",height = 4.2*scale_fact, width = 7*scale_fact)
+
+## legends
+omega_lv <- as.numeric(names(omega_cols))
+R0_lv    <- as.numeric(names(R0_cols))
+
+vcolorbar <- function(pal, lo, hi) {
+  ys <- seq(lo, hi, length.out = length(pal) + 1)
+  plot(NA, xlim = c(0, 1), ylim = c(lo, hi), xaxs = "i", yaxs = "i",
+       axes = FALSE, xlab = NA, ylab = NA)
+  rect(0, ys[-length(ys)], 1, ys[-1], col = pal, border = NA)
+  axis(4, las = 1)
+  box()
+}
+
+pdf("figures/fig5/legend_omega.pdf", width = 1.25*0.9, height = 3*(0.9))
+par(mar = c(1, 1, 1, 4))
+vcolorbar(omega_pal, min(Z),    max(Z))
+dev.off()
+pdf("figures/fig5/legend_R0.pdf", width = 1.25*0.9, height = 3*(0.9))
+par(mar = c(1, 1, 1, 4))
+vcolorbar(R0_pal,    min(Rmat), max(Rmat))
+dev.off()
+```
+
+# remake surfaces with data attached
+```{r}
+library(ggplot2)
+library(ggnewscale)
+
+
+df <- data.frame(x    = viable_df$midpeak_monthlyburden,
+                 y    = viable_df$midpeak_longtermdiff,
+                 z    = viable_df$omegas,
+                 r    = viable_df$R0_avgs)
+# fix a smaller window within acceptable parameters
+df <- df[df$r <= 6, ]
+df <- df[df$x <= 20, ]
+
+# fit splines across R_0
+n_grid <- 60
+
+fit_strand <- function(s) {
+  r0 <- s$r[1]                                   
+  s  <- aggregate(cbind(x, y) ~ z, data = s, FUN = mean)
+  s  <- s[order(s$z), ]
+  if (nrow(s) < 6) return(NULL)
+
+  k  <- min(8, nrow(s) - 1)
+  fx <- smooth.spline(s$z, s$x, df = k)
+  fy <- smooth.spline(s$z, s$y, df = k)
+  zg <- seq(min(s$z), max(s$z), length.out = n_grid)   
+  list(r = r0,
+       x = predict(fx, zg)$y,
+       y = predict(fy, zg)$y,
+       z = zg)
+}
+
+strands <- split(df, df$r)
+strands <- strands[order(as.numeric(names(strands)))]
+fits    <- Filter(Negate(is.null), lapply(strands, fit_strand))
+
+rv <- sapply(fits, `[[`, "r")
+X  <- do.call(rbind, lapply(fits, `[[`, "x"))
+Y  <- do.call(rbind, lapply(fits, `[[`, "y"))
+Z  <- do.call(rbind, lapply(fits, `[[`, "z"))
+
+smooth_cols <- function(M, df_r) {
+  apply(M, 2, function(col) predict(smooth.spline(rv, col, df = df_r), rv)$y)
+}
+df_r <- min(20, length(rv) - 1)     
+X <- smooth_cols(X, df_r)
+Y <- smooth_cols(Y, df_r)
+Z <- smooth_cols(Z, df_r)
+
+Rmat <- matrix(rv, nrow = nrow(X), ncol = ncol(X))
+
+# interpolate down onto level sets
+omega_levels <- sort(unique(df$z))[round(rev(seq(5, 86, length.out = 20)))]
+R0_levels    <- sort(unique(df$r))[round(rev(seq(4, 48, length.out = 21)))]
+
+# fixed omega curve
+level_curve <- function(lv) {
+  pts <- t(sapply(seq_len(nrow(Z)), function(i) {
+    z <- Z[i, ]
+    if (lv < min(z) || lv > max(z)) return(c(NA_real_, NA_real_))
+    o <- order(z)
+    c(approx(z[o], X[i, o], xout = lv)$y,
+      approx(z[o], Y[i, o], xout = lv)$y)
+  }))
+  data.frame(x = pts[, 1], y = pts[, 2], z = lv, r = rv)
+}
+
+omega_curves <- do.call(rbind, lapply(omega_levels, function(lv) {
+  cv <- level_curve(lv)
+  cv$level <- lv
+  cv$row   <- seq_len(nrow(cv))
+  cv
+}))
+
+# fixed R0 curve
+r_level_curve <- function(lv) {
+  if (lv < min(rv) || lv > max(rv)) return(NULL)
+  data.frame(
+    x = sapply(seq_len(ncol(X)), function(j) approx(rv, X[, j], xout = lv)$y),
+    y = sapply(seq_len(ncol(Y)), function(j) approx(rv, Y[, j], xout = lv)$y),
+    z = sapply(seq_len(ncol(Z)), function(j) approx(rv, Z[, j], xout = lv)$y),
+    r = lv
+  )
+}
+
+R0_curves <- do.call(rbind, lapply(R0_levels, function(lv) {
+  cv <- r_level_curve(lv)
+  if (is.null(cv)) return(NULL)
+  cv$level <- lv
+  cv$row   <- seq_len(nrow(cv))
+  cv
+}))
+
+omega_cols <- setNames(colorRampPalette(c("#F1D3AE", "#A5691C"))(length(omega_levels)),
+                       sort(omega_levels))
+R0_cols    <- setNames(colorRampPalette(c("#B3CBEC", "#1E4477"))(length(R0_levels)),
+                       sort(R0_levels))
+library(plot3D)
+opac_lvl <- 0.2
+# --- continuous palettes with stops at the level values ---
+make_palette <- function(cols, lo, hi, n = 512) {
+  v   <- as.numeric(names(cols))
+  pos <- pmin(pmax((v - lo) / (hi - lo), 0), 1)
+  pos <- c(0, pos, 1)
+  col <- c(cols[1], unname(cols), cols[length(cols)])
+  keep <- !duplicated(pos, fromLast = TRUE)
+  pos <- pos[keep]; col <- col[keep]
+  rgbm <- col2rgb(col)
+  grid <- seq(0, 1, length.out = n)
+  ch   <- sapply(1:3, function(i) approx(pos, rgbm[i, ], xout = grid, rule = 2)$y)
+  rgb(ch[, 1], ch[, 2], ch[, 3], maxColorValue = 255)
+}
+
+omega_pal <- make_palette(omega_cols, min(Z),    max(Z))
+R0_pal    <- make_palette(R0_cols,    min(Rmat), max(Rmat))
+
+
+xx <- as.matrix(X); yy <- as.matrix(Y) 
+
+zlim1 <- range(c(Z, R0_curves$z), na.rm = TRUE)
+png("figures/supplement/surface_omega_zwsims.png", height = 6, width = 4, units = "in", res = 300)
+persp3D(x = xx, y = yy, z = Z*1000, colvar = Z*1000,
+        col = omega_pal, clim = range(Z)*1000, zlim = zlim1*1000,
+        alpha = opac_lvl, border = NA, colkey = FALSE,
+        theta = -30, 
+        phi = 0, ticktype = "detailed",
+        bty = "u",                 
+        col.grid = "transparent",  
+        col.panel = "white",       
+        xlab = "", ylab = "", zlab = "",
+        expand = 1.5)
+
+for (lv in unique(R0_curves$level)) {
+  cv <- R0_curves[R0_curves$level == lv, ]
+  lines3D(x = cv$x, y = cv$y, z = cv$z*1000, add = TRUE,
+          col = R0_cols[as.character(lv)], lwd = 2.5)
+}
+points3D(
+  x = df$x,
+  y = df$y,
+  z = df$z*1000,
+  add = TRUE,
+  col = "black",
+  pch = 16,
+  cex = 0.5,
+  alpha = 0.6
+)
+dev.off()
+
+
+zlim2 <- range(c(Rmat, omega_curves$r), na.rm = TRUE)
+png("figures/supplement/surface_R0_zwsims.png", height = 6, width = 4, units = "in", res = 300)
+persp3D(x = xx, y = yy, z = Rmat, colvar = Rmat,
+        col = R0_pal, clim = range(Rmat), zlim = zlim2,
+        alpha = opac_lvl, border = NA, colkey = FALSE,
+        theta = -30, phi = 0, ticktype = "detailed", 
+        bty = "u",                
+        col.grid = "transparent",  
+        col.panel = "white",       
+        xlab = "", ylab = "", zlab = "",
+        expand = 1.5)
+
+for (lv in unique(omega_curves$level)) {
+  cv  <- omega_curves[omega_curves$level == lv, ]
+  cv  <- cv[order(cv$row), ]
+  ok  <- complete.cases(cv[, c("x", "y", "r")])
+  run <- cumsum(!ok)                    
+  col <- omega_cols[as.character(lv)]
+
+  for (g in unique(run[ok])) {
+    seg <- cv[ok & run == g, ]
+    if (nrow(seg) < 2) next
+    lines3D(x = seg$x, y = seg$y, z = seg$r, add = TRUE,
+            col = unname(col), lwd = 2.5)
+  }
+}
+points3D(
+  x = df$x,
+  y = df$y,
+  z = df$r,
+  add = TRUE,
+  col = "black",
+  pch = 16,
+  cex = 0.5,
+  alpha = 0.6
+)
+dev.off()
+```
+
+
+
 >>>>>>> 25d325fa6142fb56f30aafcfa0140d43270906b1
